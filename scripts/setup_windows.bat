@@ -3,12 +3,16 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ===============================================
-echo    ChatGLM训练环境设置脚本 - Windows版本 (Python 3.10)
+echo    ChatGLM训练环境设置脚本 - Windows版本
 echo ===============================================
 echo.
 
 REM 使用Windows原生颜色
 color 0A
+
+REM 获取CPU核心数
+for /f "tokens=*" %%a in ('powershell -command "Get-CimInstance Win32_ComputerSystem | Select-Object -ExpandProperty NumberOfLogicalProcessors"') do set CPU_CORES=%%a
+echo 检测到 %CPU_CORES% 个逻辑处理器核心
 
 REM 检查Python版本
 echo 检查Python环境...
@@ -16,10 +20,10 @@ for /f "tokens=*" %%a in ('python --version 2^>^&1') do set PYTHON_VERSION=%%a
 echo 检测到: %PYTHON_VERSION%
 
 REM 验证Python版本
-python -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 10 else 1)"
+python -c "import sys; sys.exit(0 if (sys.version_info.major == 3 and sys.version_info.minor >= 8 and sys.version_info.minor <= 13) else 1)"
 if %ERRORLEVEL% NEQ 0 (
     color 0E
-    echo 警告: 推荐使用Python 3.10版本，当前版本可能存在兼容性问题
+    echo 警告: 推荐使用Python 3.8-3.13版本，当前版本可能存在兼容性问题
     pause
 )
 
@@ -105,7 +109,7 @@ REM 生成训练建议
 echo.
 echo 环境设置完成!
 echo.
-echo 基于系统内存 (%MEM_FREE_GB% GB) 推荐以下训练命令:
+echo 基于系统内存 (%MEM_FREE_GB% GB) 和CPU核心数 (%CPU_CORES%) 推荐以下训练命令:
 echo.
 
 REM 检查是否安装了bitsandbytes
@@ -146,5 +150,10 @@ if %BNB_INSTALLED% NEQ 0 (
 )
 
 echo.
+echo 设置的环境变量:
+echo set OMP_NUM_THREADS=%CPU_CORES%
+echo set MKL_NUM_THREADS=%CPU_CORES%
+echo.
+
 echo 按任意键退出...
 pause > nul

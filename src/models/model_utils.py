@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import logging
 from transformers import (
@@ -45,6 +46,11 @@ def load_base_model(
         model: 加载的模型
         tokenizer: 加载的分词器
     """
+    # 检查Python版本
+    if not (sys.version_info.major == 3 and 8 <= sys.version_info.minor <= 13):
+        logger.warning(
+            f"当前Python版本 {sys.version_info.major}.{sys.version_info.minor} 可能不兼容，推荐使用Python 3.8-3.13")
+
     # 确定设备和低精度设置
     load_in_8bit = quantization == "8bit"
     load_in_4bit = quantization == "4bit"
@@ -66,6 +72,13 @@ def load_base_model(
     if load_in_8bit or load_in_4bit:
         try:
             import bitsandbytes as bnb
+            from packaging import version
+
+            # 检查bitsandbytes版本
+            required_version = "0.37.0"
+            if version.parse(bnb.__version__) < version.parse(required_version):
+                logger.warning(f"bitsandbytes版本 {bnb.__version__} 可能过低，推荐 >= {required_version}")
+
             if load_in_8bit:
                 logger.info("使用8位量化加载模型")
                 model_kwargs.update({"load_in_8bit": True})
@@ -73,8 +86,11 @@ def load_base_model(
                 logger.info("使用4位量化加载模型")
                 model_kwargs.update({"load_in_4bit": True})
         except ImportError:
+            os_name = "Windows" if sys.platform.startswith("win") else "Linux"
+            install_cmd = "pip install -U bitsandbytes-windows>=0.37.0" if os_name == "Windows" else "pip install -U bitsandbytes>=0.37.0"
+
             logger.warning("未找到bitsandbytes库或版本不兼容，改为使用浮点精度加载")
-            logger.warning("提示: 运行 'pip install -U bitsandbytes>=0.39.0' 安装所需库")
+            logger.warning(f"提示: 运行 '{install_cmd}' 安装所需库")
             load_in_8bit = False
             load_in_4bit = False
             model_kwargs.update({"torch_dtype": torch.float32})
@@ -107,10 +123,12 @@ def load_base_model(
     except ImportError as e:
         # 处理可能的依赖问题
         if "bitsandbytes" in str(e) or "accelerate" in str(e):
+            os_name = "Windows" if sys.platform.startswith("win") else "Linux"
+            bnb_install = "pip install -U bitsandbytes-windows>=0.37.0" if os_name == "Windows" else "pip install -U bitsandbytes>=0.37.0"
+
             logger.error("缺少8位/4位量化所需的依赖，尝试安装:")
-            logger.error("  pip install -U accelerate")
-            logger.error("  pip install -U bitsandbytes>=0.39.0")
-            logger.error("如果安装失败，尝试: pip install bitsandbytes-windows")
+            logger.error(f"  pip install -U accelerate")
+            logger.error(f"  {bnb_install}")
             logger.error("或重新运行时使用 --quantization None 禁用量化")
             raise ImportError("量化依赖缺失，详见上述日志") from e
         else:
@@ -195,6 +213,8 @@ def save_model_and_tokenizer(model, tokenizer, output_dir, peft_only=False):
         output_dir: 输出目录
         peft_only: 是否只保存PEFT权重
     """
+    # 标准化输出路径
+    output_dir = os.path.normpath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     if peft_only and isinstance(model, PeftModel):
@@ -221,6 +241,10 @@ def load_peft_model(base_model_path, adapter_path, quantization=None):
         model: 加载的PEFT模型
         tokenizer: 加载的分词器
     """
+    # 标准化路径
+    base_model_path = os.path.normpath(base_model_path)
+    adapter_path = os.path.normpath(adapter_path)
+
     logger.info(f"加载基础模型 {base_model_path}")
     model, tokenizer = load_base_model(base_model_path, quantization=quantization)
 

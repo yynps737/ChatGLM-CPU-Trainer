@@ -15,17 +15,6 @@ def create_trainer(
         args=None,
         data_collator=None
 ):
-
-    if not torch.cuda.is_available():
-        logger.info("检测到CPU训练环境，应用CPU特定优化...")
-        # 禁用混合精度训练
-        if hasattr(args, 'fp16') and args.fp16:
-            logger.warning("在CPU上不支持FP16训练，已自动禁用")
-            args.fp16 = False
-        if hasattr(args, 'bf16') and args.bf16:
-            logger.warning("在CPU上不支持BF16训练，已自动禁用")
-            args.bf16 = False
-
     """创建训练器
 
     Args:
@@ -39,6 +28,16 @@ def create_trainer(
     Returns:
         trainer: Trainer对象
     """
+    if not torch.cuda.is_available():
+        logger.info("检测到CPU训练环境，应用CPU特定优化...")
+        # 禁用混合精度训练
+        if hasattr(args, 'fp16') and args.fp16:
+            logger.warning("在CPU上不支持FP16训练，已自动禁用")
+            args.fp16 = False
+        if hasattr(args, 'bf16') and args.bf16:
+            logger.warning("在CPU上不支持BF16训练，已自动禁用")
+            args.bf16 = False
+
     # 如果没有提供data_collator，创建默认的
     if data_collator is None:
         data_collator = DataCollatorForLanguageModeling(
@@ -75,14 +74,6 @@ def create_training_args(
         deepspeed: Optional[str] = None,
         **kwargs
 ) -> TrainingArguments:
-    # 检查CPU环境并强制禁用混合精度
-    if not torch.cuda.is_available():
-        if fp16 or bf16:
-            logger.warning("在CPU环境中，已自动禁用FP16和BF16设置")
-        fp16 = False
-        bf16 = False
-
-
     """创建训练参数
 
     Args:
@@ -104,6 +95,13 @@ def create_training_args(
     Returns:
         TrainingArguments对象
     """
+    # 检查CPU环境并强制禁用混合精度
+    if not torch.cuda.is_available():
+        if fp16 or bf16:
+            logger.warning("在CPU环境中，已自动禁用FP16和BF16设置")
+        fp16 = False
+        bf16 = False
+
     # 创建基本的训练参数
     training_args = TrainingArguments(
         output_dir=output_dir,

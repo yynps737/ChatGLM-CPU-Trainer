@@ -7,10 +7,13 @@ echo    ChatGLM CPU训练脚本 - Windows版本 (Python 3.10)
 echo ===============================================
 echo.
 
-REM 设置CPU相关环境变量
+REM 设置CPU相关环境变量 - 动态获取CPU核心数
 echo 设置环境变量...
-set OMP_NUM_THREADS=32
-set MKL_NUM_THREADS=32
+for /f "tokens=*" %%a in ('powershell -command "Get-CimInstance Win32_ComputerSystem | Select-Object -ExpandProperty NumberOfLogicalProcessors"') do set CPU_CORES=%%a
+echo 检测到 %CPU_CORES% 个逻辑处理器核心
+
+set OMP_NUM_THREADS=%CPU_CORES%
+set MKL_NUM_THREADS=%CPU_CORES%
 set MKL_DYNAMIC=FALSE
 set OMP_SCHEDULE=STATIC
 set OMP_PROC_BIND=CLOSE
@@ -31,10 +34,10 @@ echo 检查系统内存...
 for /f "tokens=*" %%a in ('powershell -command "[Math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB, 2)"') do set MEM_FREE_GB=%%a
 echo 可用内存: %MEM_FREE_GB% GB
 
-REM 检查是否使用Python 3.10
-python -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 10 else 1)" >nul 2>&1
+REM 检测是否使用Python 3.8-3.13
+python -c "import sys; sys.exit(0 if (sys.version_info.major == 3 and sys.version_info.minor >= 8 and sys.version_info.minor <= 13) else 1)" >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo 警告: 当前不是Python 3.10，可能存在兼容性问题
+    echo 警告: 当前Python版本可能不兼容，推荐使用Python 3.8-3.13
 )
 
 REM 检查bitsandbytes是否安装

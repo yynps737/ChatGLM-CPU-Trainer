@@ -4,11 +4,20 @@ echo    ChatGLM 指令微调示例 - Windows版本
 echo ===============================================
 echo.
 
-:: 设置环境变量
-set OMP_NUM_THREADS=32
-set MKL_NUM_THREADS=32
+:: 动态设置环境变量
+for /f "tokens=*" %%a in ('powershell -command "Get-CimInstance Win32_ComputerSystem | Select-Object -ExpandProperty NumberOfLogicalProcessors"') do set CPU_CORES=%%a
+echo 检测到 %CPU_CORES% 个逻辑处理器核心
+
+set OMP_NUM_THREADS=%CPU_CORES%
+set MKL_NUM_THREADS=%CPU_CORES%
 set HF_ENDPOINT=https://hf-mirror.com
 set CUDA_VISIBLE_DEVICES=
+
+:: 检查Python版本
+python -c "import sys; sys.exit(0 if (sys.version_info.major == 3 and sys.version_info.minor >= 8 and sys.version_info.minor <= 13) else 1)" >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo 警告: 当前Python版本可能不兼容，推荐使用Python 3.8-3.13
+)
 
 :: 检查bitsandbytes是否安装
 python -c "import bitsandbytes" >nul 2>&1
