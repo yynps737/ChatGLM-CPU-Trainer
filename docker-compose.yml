@@ -6,12 +6,14 @@ services:
     volumes:
       - ./data:/app/data
       - ./models:/app/models
+      - ~/.cache/huggingface:/root/.cache/huggingface  # 挂载Hugging Face缓存目录
     environment:
       - OMP_NUM_THREADS=${NUM_THREADS:-4}
       - MKL_NUM_THREADS=${NUM_THREADS:-4}
       - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONPATH=/app
       - MEMORY_CONFIG=${MEMORY_CONFIG:-default}  # 可选: 4gb, 8gb, 16gb, 32gb
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface  # 设置模型缓存路径
     command: >
       python -m app.train 
       --model_name_or_path THUDM/chatglm2-6b 
@@ -27,6 +29,7 @@ services:
       --num_train_epochs ${NUM_EPOCHS:-3}
       ${MONITOR_MEMORY:+--monitor_memory}
       --memory_check_interval ${MEMORY_CHECK_INTERVAL:-60}
+      --performance_log_steps ${PERFORMANCE_LOG_STEPS:-100}
     deploy:
       resources:
         limits:
@@ -40,11 +43,13 @@ services:
     volumes:
       - ./data:/app/data
       - ./models:/app/models
+      - ~/.cache/huggingface:/root/.cache/huggingface  # 挂载Hugging Face缓存目录
     environment:
       - OMP_NUM_THREADS=${NUM_THREADS:-4}
       - MKL_NUM_THREADS=${NUM_THREADS:-4}
       - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONPATH=/app
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface  # 设置模型缓存路径
     command: >
       python -m app.predict
       --model_path /app/models/chatglm-lora
