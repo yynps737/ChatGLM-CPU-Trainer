@@ -12,14 +12,14 @@ import gc
 import torch
 from threading import Thread
 import time
-import json
 from pathlib import Path
 import traceback
 
 class MemoryMonitor:
     """内存使用监控类，用于追踪系统和进程的内存使用情况"""
 
-    def __init__(self, logger=None, check_interval=30, warning_threshold=0.85, max_objects_to_analyze=1000):
+    def __init__(self, logger=None, check_interval=30, warning_threshold=0.85,
+                 max_objects_to_analyze=1000, log_dir="/app/data/output"):
         """
         初始化内存监控器
 
@@ -28,6 +28,7 @@ class MemoryMonitor:
             check_interval: 检查内存间隔时间(秒)
             warning_threshold: 内存使用警告阈值(0-1)，超过该值将发出警告
             max_objects_to_analyze: 内存分析时检查的最大对象数
+            log_dir: 日志文件目录
         """
         self.logger = logger or logging.getLogger(__name__)
         self.check_interval = check_interval
@@ -35,7 +36,7 @@ class MemoryMonitor:
         self.monitoring = False
         self.monitor_thread = None
         self.process = psutil.Process(os.getpid())
-        self.max_objects_to_analyze = max_objects_to_analyze  # 修复：限制分析对象数量
+        self.max_objects_to_analyze = max_objects_to_analyze
 
         # 记录最大内存使用量
         self.peak_system_memory = 0
@@ -43,8 +44,10 @@ class MemoryMonitor:
         self.peak_timestamp = None
 
         # 创建内存日志文件
-        self.log_file = "/app/data/output/memory_usage.csv"
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+        log_dir_path = Path(log_dir)
+        log_dir_path.mkdir(parents=True, exist_ok=True)
+        self.log_file = str(log_dir_path / "memory_usage.csv")
+
         with open(self.log_file, 'w', encoding='utf-8') as f:
             f.write("timestamp,system_percent,process_rss_mb,process_vms_mb,available_memory_gb\n")
 
@@ -89,6 +92,26 @@ class MemoryMonitor:
                 'process': {'rss': 0, 'vms': 0, 'percent': 0}
             }
 
+    def log_memory_usage(self, memory_info=None):
+        """
+        将内存使用记录到CSV文件
+
+        参数:
+            memory_info: 可选的内存信息，如果为None则获取当前值
+        """
+        try:
+            mem_info = memory_info or self.get_memory_info()
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            available_gb = mem_info['system']['available'] / (1024**3)
+
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(f"{timestamp},{mem_info['system']['percent']:.2f},"
+                        f"{mem_info['process']['rss']/(1024**2):.2f},"
+                        f"{mem_info['process']['vms']/(1024**2):.2f},"
+                        f"{available_gb:.2f}\n")
+        except Exception as e:
+            self.logger.error(f"写入内存日志出错: {e}")
+
     def print_memory_info(self, detailed=False):
         """
         打印当前内存使用信息
@@ -104,13 +127,7 @@ class MemoryMonitor:
             self.logger.info(f"进程内存使用: {mem_info['process']['rss'] / (1024 ** 2):.2f}MB")
 
             # 记录到CSV
-            try:
-                with open(self.log_file, 'a', encoding='utf-8') as f:
-                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    available_gb = mem_info['system']['available'] / (1024**3)
-                    f.write(f"{timestamp},{mem_info['system']['percent']:.2f},{mem_info['process']['rss']/(1024**2):.2f},{mem_info['process']['vms']/(1024**2):.2f},{available_gb:.2f}\n")
-            except Exception as e:
-                self.logger.error(f"写入内存日志出错: {e}")
+            self.log_memory_usage(mem_info)
 
             # 检查是否接近内存限制
             if mem_info['system']['percent'] > self.warning_threshold * 100:
@@ -142,40 +159,44 @@ class MemoryMonitor:
                     self.logger.info(f"CUDA已分配内存: {torch.cuda.memory_allocated() / (1024 ** 2):.2f}MB")
                     self.logger.info(f"CUDA缓存内存: {torch.cuda.memory_reserved() / (1024 ** 2):.2f}MB")
 
-                # 获取当前Python内存使用情况 - 修复：限制分析对象数量
-                self._analyze_python_objects()
+                # 如果内存使用超过阈值，执行Python对象分析
+                if mem_info['system']['percent'] > self.warning_threshold * 75:
+                    self._analyze_python_objects()
 
         except Exception as e:
             self.logger.error(f"打印内存信息出错: {e}")
             self.logger.error(traceback.format_exc())
 
     def _analyze_python_objects(self):
-        """分析Python对象内存使用情况"""
+        """分析Python对象内存使用情况, 使用采样方法提高效率"""
         try:
             import sys
-            all_objects = gc.get_objects()
-            self.logger.info(f"Python对象总数: {len(all_objects)}")
+            import random
 
-            # 修复：限制分析的对象数量
-            objects_to_analyze = all_objects[:self.max_objects_to_analyze]
-            self.logger.info(f"分析前{self.max_objects_to_analyze}个对象...")
+            # 获取所有对象 - 潜在的高内存操作
+            all_objects = gc.get_objects()
+            total_objects = len(all_objects)
+            self.logger.info(f"Python对象总数: {total_objects}")
+
+            # 如果对象太多，采样分析
+            if total_objects > self.max_objects_to_analyze:
+                self.logger.info(f"对象数量过多，将对{self.max_objects_to_analyze}个样本进行分析")
+                objects_to_analyze = random.sample(all_objects, self.max_objects_to_analyze)
+            else:
+                objects_to_analyze = all_objects
 
             # 统计对象类型
             type_sizes = {}
+            large_torch_tensors = 0
+            large_lists = 0
+
             for obj in objects_to_analyze:
-                obj_type = str(type(obj))
+                obj_type = type(obj).__name__
                 if obj_type not in type_sizes:
                     type_sizes[obj_type] = 0
                 type_sizes[obj_type] += 1
 
-            # 打印前5个最常见对象类型
-            top_types = sorted(type_sizes.items(), key=lambda x: x[1], reverse=True)[:5]
-            self.logger.info(f"最常见的对象类型: {top_types}")
-
-            # 尝试分析大型对象
-            large_torch_tensors = 0
-            large_lists = 0
-            for obj in objects_to_analyze:
+                # 分析大型对象
                 try:
                     if isinstance(obj, torch.Tensor) and obj.numel() > 1000000:
                         large_torch_tensors += 1
@@ -183,6 +204,10 @@ class MemoryMonitor:
                         large_lists += 1
                 except:
                     pass
+
+            # 打印前5个最常见对象类型
+            top_types = sorted(type_sizes.items(), key=lambda x: x[1], reverse=True)[:5]
+            self.logger.info(f"最常见的对象类型: {top_types}")
 
             if large_torch_tensors > 0:
                 self.logger.info(f"发现{large_torch_tensors}个大型Torch张量")
@@ -280,9 +305,3 @@ class MemoryMonitor:
 
         self.logger.info("=" * 40)
         self.logger.info("内存监控已停止")
-
-# 使用示例：
-# monitor = MemoryMonitor()
-# monitor.start_monitoring()
-# ... 进行训练 ...
-# monitor.stop_monitoring()

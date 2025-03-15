@@ -1,4 +1,4 @@
-FROM python:3.8-slim
+FROM python:3.8-slim-bullseye
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -39,5 +39,5 @@ ENV PYTHONPATH="${PYTHONPATH}:/app"
 # 设置卷
 VOLUME ["/app/data", "/app/models"]
 
-# 默认命令
-CMD ["python", "-c", "import sys; print('请使用特定命令启动容器')"]
+# 提供帮助信息的默认命令
+CMD ["python", "-c", "print('ChatGLM-CPU-Trainer\\n\\n可用命令:\\n- python -m app.train --help\\n- python -m app.predict --help\\n\\n详细用法请参考README.md')"]
