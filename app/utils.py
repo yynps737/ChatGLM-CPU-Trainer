@@ -160,6 +160,20 @@ def load_model_and_tokenizer(model_path, quantization="None"):
             cache_exists = False
     else:
         logger.info("未找到本地缓存记录，模型将从Hugging Face下载")
+        # 检查网络连接
+        try:
+            import requests
+            # 尝试访问HF端点
+            timeout = 5
+            hf_endpoint = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
+            response = requests.get(f"{hf_endpoint}", timeout=timeout)
+            if response.status_code == 200:
+                logger.info(f"HF端点连接正常: {hf_endpoint}")
+            else:
+                logger.warning(f"HF端点响应异常，状态码: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"检查HF端点连接失败: {e}")
+            logger.info("将继续尝试下载模型，但可能遇到网络问题")
 
     # 加载分词器
     tokenizer = load_tokenizer(model_path)
@@ -182,6 +196,65 @@ def clean_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+def detect_csv_delimiter(file_path):
+    """
+    检测CSV文件的分隔符
+
+    参数:
+        file_path: CSV文件路径
+
+    返回:
+        检测到的分隔符
+    """
+    logger = logging.getLogger(__name__)
+    # 默认分隔符
+    default_delimiter = ','
+
+    try:
+        # 读取前两行进行分析
+        with open(file_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            second_line = f.readline().strip() if f.readline() else ""
+
+        if not first_line:
+            logger.warning("文件可能为空")
+            return default_delimiter
+
+        # 可能的分隔符及其出现频率
+        delimiters = {',': 0, '\t': 0, ';': 0, '|': 0}
+
+        # 检查第一行中各分隔符的数量
+        for delimiter in delimiters:
+            delimiters[delimiter] = first_line.count(delimiter)
+
+        # 如果第二行存在，也检查它
+        if second_line:
+            for delimiter in delimiters:
+                # 确保两行中的分隔符数量一致
+                if second_line.count(delimiter) != delimiters[delimiter] and delimiters[delimiter] > 0:
+                    # 数量不一致，可能不是此分隔符
+                    delimiters[delimiter] = -1
+
+        # 找出出现次数最多且大于0的分隔符
+        max_count = 0
+        detected_delimiter = default_delimiter
+
+        for delimiter, count in delimiters.items():
+            if count > max_count:
+                max_count = count
+                detected_delimiter = delimiter
+
+        if max_count > 0:
+            logger.info(f"检测到CSV分隔符: '{detected_delimiter}'")
+            return detected_delimiter
+        else:
+            logger.warning(f"无法确定分隔符，使用默认分隔符: '{default_delimiter}'")
+            return default_delimiter
+
+    except Exception as e:
+        logger.error(f"分隔符检测出错: {e}")
+        return default_delimiter
+
 def load_dataset_from_file(dataset_path, text_column):
     """从文件加载数据集
 
@@ -199,9 +272,43 @@ def load_dataset_from_file(dataset_path, text_column):
 
     try:
         if file_ext == '.csv':
-            df = pd.read_csv(dataset_path, encoding='utf-8')
+            # 自动检测分隔符
+            delimiter = detect_csv_delimiter(dataset_path)
+            logger.info(f"使用分隔符 '{delimiter}' 加载CSV文件")
+
+            # 尝试自动检测编码
+            encodings = ['utf-8', 'gbk', 'latin1']
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(dataset_path, encoding=encoding, delimiter=delimiter)
+                    logger.info(f"成功使用 {encoding} 编码加载CSV")
+                    break
+                except UnicodeDecodeError:
+                    logger.warning(f"{encoding} 编码加载失败，尝试其他编码")
+                except Exception as e:
+                    logger.error(f"使用 {encoding} 编码加载CSV出错: {e}")
+                    raise
+            else:
+                # 所有编码都失败
+                logger.error("无法使用任何已知编码加载CSV")
+                raise ValueError("CSV加载失败：编码问题")
+
         elif file_ext == '.json' or file_ext == '.jsonl':
-            df = pd.read_json(dataset_path, lines=file_ext == '.jsonl', encoding='utf-8')
+            # 尝试自动检测是否为jsonl格式
+            with open(dataset_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline().strip()
+
+            # 检查第一行是否是一个完整的JSON对象
+            try:
+                json.loads(first_line)
+                is_jsonl = True
+                logger.info("检测到JSONL格式")
+            except json.JSONDecodeError:
+                # 不是一个完整的JSON对象，可能是普通JSON
+                is_jsonl = file_ext == '.jsonl'
+
+            df = pd.read_json(dataset_path, lines=is_jsonl, encoding='utf-8')
+
         elif file_ext == '.txt':
             # 简单文本文件，一行一个样本
             with open(dataset_path, 'r', encoding='utf-8') as f:
@@ -226,6 +333,19 @@ def load_dataset_from_file(dataset_path, text_column):
         logger.error("数据集为空")
         raise ValueError("数据集为空，无法继续处理")
 
+    # 检查数据集大小
+    logger.info(f"加载的数据集包含 {len(df)} 行, {len(df.columns)} 列")
+
+    # 数据集太大时提示
+    if len(df) > 10000:
+        logger.warning(f"数据集较大 ({len(df)}行)，可能需要较长处理时间和更多内存")
+
+    # 检查数据集质量
+    for col in df.columns:
+        null_count = df[col].isnull().sum()
+        if null_count > 0:
+            logger.warning(f"列 '{col}' 包含 {null_count} 个空值 ({null_count/len(df):.2%})")
+
     return df
 
 def check_and_fix_text_column(df, text_column):
@@ -242,13 +362,46 @@ def check_and_fix_text_column(df, text_column):
 
     # 检查文本列是否存在
     if text_column not in df.columns:
-        logger.error(f"文本列 '{text_column}' 不存在于数据集中。可用列: {', '.join(df.columns)}")
+        logger.warning(f"文本列 '{text_column}' 不存在于数据集中。可用列: {', '.join(df.columns)}")
+
+        # 尝试查找可能的文本列
+        text_column_candidates = ['text', 'content', 'data', 'input', 'prompt', 'message', 'instruction']
+
+        # 首先尝试精确匹配
+        for candidate in text_column_candidates:
+            if candidate in df.columns:
+                text_column = candidate
+                logger.info(f"使用找到的文本列: '{text_column}'")
+                return text_column
+
+        # 然后尝试部分匹配
+        for candidate in text_column_candidates:
+            for col in df.columns:
+                if candidate in col.lower():
+                    text_column = col
+                    logger.info(f"使用部分匹配的文本列: '{text_column}'")
+                    return text_column
+
         # 如果只有一列，自动使用那一列
         if len(df.columns) == 1:
             text_column = df.columns[0]
             logger.info(f"自动使用唯一可用列: '{text_column}'")
-        else:
-            raise ValueError(f"文本列 '{text_column}' 不存在")
+            return text_column
+
+        # 尝试寻找字符串类型的列
+        string_columns = df.select_dtypes(include=['object']).columns.tolist()
+        if string_columns:
+            text_column = string_columns[0]
+            logger.info(f"自动使用第一个字符串类型列: '{text_column}'")
+            return text_column
+
+        # 如果还是找不到
+        raise ValueError(f"文本列 '{text_column}' 不存在，无法自动确定替代列")
+
+    # 检查文本列数据类型
+    if not pd.api.types.is_string_dtype(df[text_column]):
+        logger.warning(f"文本列 '{text_column}' 不是字符串类型，尝试转换...")
+        df[text_column] = df[text_column].astype(str)
 
     return text_column
 
@@ -268,6 +421,20 @@ def tokenize_dataset(dataset, tokenizer, text_column, max_seq_length):
 
     def tokenize_function(examples):
         texts = examples[text_column]
+
+        # 记录一些样本的长度分布
+        if isinstance(texts, list) and len(texts) > 0:
+            lengths = [len(text) for text in texts[:100]]  # 只取前100个样本
+            avg_length = sum(lengths) / len(lengths)
+            max_length = max(lengths)
+            min_length = min(lengths)
+            logger.info(f"文本长度分布: 最小={min_length}, 平均={avg_length:.2f}, 最大={max_length}")
+
+            # 检查是否有过短的文本
+            short_texts = [text for text in texts[:100] if len(text) < 10]
+            if short_texts:
+                logger.warning(f"发现 {len(short_texts)} 个过短的文本样本 (长度<10)，可能影响训练质量")
+                logger.info(f"样例: {short_texts[:3]}")
 
         # 分词并截断
         try:
@@ -289,8 +456,11 @@ def tokenize_dataset(dataset, tokenizer, text_column, max_seq_length):
             raise
 
     # 处理数据集
-    logger.info(f"对数据集进行分词处理...")
+    logger.info(f"对数据集进行分词处理 (最大长度: {max_seq_length})...")
     try:
+        # 打印分词器信息
+        logger.info(f"分词器类型: {type(tokenizer).__name__}")
+
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
@@ -313,9 +483,28 @@ def tokenize_dataset(dataset, tokenizer, text_column, max_seq_length):
                 return_tensors="pt"
             )
             logger.info(f"样本分词成功，形状: {sample_tokens['input_ids'].shape}")
+
+            # 尝试分批处理数据集
+            logger.info("尝试使用较小批处理大小...")
+            tokenized_dataset = dataset.map(
+                tokenize_function,
+                batched=True,
+                batch_size=10,  # 减小批处理大小
+                num_proc=1,
+                remove_columns=dataset.column_names
+            )
         except Exception as sample_error:
             logger.error(f"样本分词也失败: {str(sample_error)}")
-        raise
+            raise
+
+    # 检查分词结果
+    try:
+        if len(tokenized_dataset) > 0:
+            sample_item = tokenized_dataset[0]
+            input_shape = sample_item['input_ids'].shape
+            logger.info(f"分词后单个样本形状: {input_shape}")
+    except Exception as e:
+        logger.error(f"检查分词结果出错: {e}")
 
     return tokenized_dataset
 

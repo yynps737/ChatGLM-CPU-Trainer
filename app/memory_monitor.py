@@ -14,6 +14,7 @@ from threading import Thread
 import time
 from pathlib import Path
 import traceback
+from collections import Counter
 
 class MemoryMonitor:
     """内存使用监控类，用于追踪系统和进程的内存使用情况"""
@@ -43,13 +44,17 @@ class MemoryMonitor:
         self.peak_process_memory = 0
         self.peak_timestamp = None
 
+        # 动态阈值计算
+        self.memory_history = []
+        self.max_history_len = 10  # 保留最近10次测量结果
+
         # 创建内存日志文件
         log_dir_path = Path(log_dir)
         log_dir_path.mkdir(parents=True, exist_ok=True)
         self.log_file = str(log_dir_path / "memory_usage.csv")
 
         with open(self.log_file, 'w', encoding='utf-8') as f:
-            f.write("timestamp,system_percent,process_rss_mb,process_vms_mb,available_memory_gb\n")
+            f.write("timestamp,system_percent,process_rss_mb,process_vms_mb,available_memory_gb,warning_threshold\n")
 
     def get_memory_info(self):
         """
@@ -71,6 +76,11 @@ class MemoryMonitor:
                 self.peak_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
             self.peak_process_memory = max(self.peak_process_memory, proc_memory.rss)
+
+            # 记录内存历史
+            if len(self.memory_history) >= self.max_history_len:
+                self.memory_history.pop(0)
+            self.memory_history.append(sys_memory.percent)
 
             return {
                 'system': {
@@ -108,9 +118,25 @@ class MemoryMonitor:
                 f.write(f"{timestamp},{mem_info['system']['percent']:.2f},"
                         f"{mem_info['process']['rss']/(1024**2):.2f},"
                         f"{mem_info['process']['vms']/(1024**2):.2f},"
-                        f"{available_gb:.2f}\n")
+                        f"{available_gb:.2f},"
+                        f"{self._get_dynamic_threshold():.2f}\n")
         except Exception as e:
             self.logger.error(f"写入内存日志出错: {e}")
+
+    def _get_dynamic_threshold(self):
+        """
+        基于历史内存使用计算动态警告阈值
+        """
+        if not self.memory_history:
+            return self.warning_threshold * 100
+
+        # 如果当前内存使用率增长迅速，降低阈值以提前预警
+        if len(self.memory_history) >= 3:
+            recent_trend = self.memory_history[-1] - self.memory_history[-3]
+            if recent_trend > 10:  # 如果3个时间点内增加超过10%
+                return max(self.warning_threshold * 95, self.memory_history[-1] + 5)
+
+        return self.warning_threshold * 100
 
     def print_memory_info(self, detailed=False):
         """
@@ -129,10 +155,13 @@ class MemoryMonitor:
             # 记录到CSV
             self.log_memory_usage(mem_info)
 
+            # 动态阈值
+            dynamic_threshold = self._get_dynamic_threshold()
+
             # 检查是否接近内存限制
-            if mem_info['system']['percent'] > self.warning_threshold * 100:
+            if mem_info['system']['percent'] > dynamic_threshold:
                 self.logger.warning(
-                    f"警告: 系统内存使用率较高({mem_info['system']['percent']:.2f}%)，可能影响性能或导致OOM错误!")
+                    f"警告: 系统内存使用率较高({mem_info['system']['percent']:.2f}%)，超过动态阈值({dynamic_threshold:.2f}%)!")
 
                 # 提供优化建议
                 self.logger.warning("建议: 考虑减少max_seq_length或max_samples参数，或切换到更低内存的配置。")
@@ -160,7 +189,7 @@ class MemoryMonitor:
                     self.logger.info(f"CUDA缓存内存: {torch.cuda.memory_reserved() / (1024 ** 2):.2f}MB")
 
                 # 如果内存使用超过阈值，执行Python对象分析
-                if mem_info['system']['percent'] > self.warning_threshold * 75:
+                if mem_info['system']['percent'] > dynamic_threshold * 0.75:
                     self._analyze_python_objects()
 
         except Exception as e:
@@ -185,34 +214,44 @@ class MemoryMonitor:
             else:
                 objects_to_analyze = all_objects
 
-            # 统计对象类型
-            type_sizes = {}
+            # 使用Counter优化统计对象类型
+            type_counts = Counter(type(obj).__name__ for obj in objects_to_analyze)
+
+            # 分析大型对象
             large_torch_tensors = 0
             large_lists = 0
+            large_dicts = 0
+            large_numpy_arrays = 0
 
             for obj in objects_to_analyze:
-                obj_type = type(obj).__name__
-                if obj_type not in type_sizes:
-                    type_sizes[obj_type] = 0
-                type_sizes[obj_type] += 1
-
-                # 分析大型对象
                 try:
                     if isinstance(obj, torch.Tensor) and obj.numel() > 1000000:
                         large_torch_tensors += 1
                     elif isinstance(obj, list) and len(obj) > 10000:
                         large_lists += 1
+                    elif isinstance(obj, dict) and len(obj) > 10000:
+                        large_dicts += 1
+                    elif hasattr(obj, 'size') and hasattr(obj, 'dtype') and hasattr(obj, 'shape') and hasattr(obj, 'size') > 1000000:
+                        # 可能是numpy数组
+                        large_numpy_arrays += 1
                 except:
                     pass
 
             # 打印前5个最常见对象类型
-            top_types = sorted(type_sizes.items(), key=lambda x: x[1], reverse=True)[:5]
+            top_types = type_counts.most_common(5)
             self.logger.info(f"最常见的对象类型: {top_types}")
 
             if large_torch_tensors > 0:
                 self.logger.info(f"发现{large_torch_tensors}个大型Torch张量")
             if large_lists > 0:
                 self.logger.info(f"发现{large_lists}个大型列表")
+            if large_dicts > 0:
+                self.logger.info(f"发现{large_dicts}个大型字典")
+            if large_numpy_arrays > 0:
+                self.logger.info(f"发现{large_numpy_arrays}个大型NumPy数组")
+
+            # 主动清理临时变量
+            del all_objects, objects_to_analyze, type_counts
 
         except Exception as e:
             self.logger.error(f"分析Python对象出错: {e}")

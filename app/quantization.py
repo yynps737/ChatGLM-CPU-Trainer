@@ -141,11 +141,30 @@ def verify_quantization(model, quantization, logger):
     try:
         # 尝试查找量化的线性层
         is_quantized = False
+        quantized_layers = 0
+        total_linear_layers = 0
+
         for name, module in model.named_modules():
-            if "Linear4bit" in str(type(module)) or "Linear8bit" in str(type(module)):
-                is_quantized = True
-                logger.info(f"检测到量化层: {name} - {type(module).__name__}")
-                break
+            if "Linear" in str(type(module)):
+                total_linear_layers += 1
+                if "Linear4bit" in str(type(module)) or "Linear8bit" in str(type(module)):
+                    is_quantized = True
+                    quantized_layers += 1
+                    if quantized_layers <= 3:  # 只记录前几个量化层
+                        logger.info(f"检测到量化层: {name} - {type(module).__name__}")
+
+        if total_linear_layers > 0:
+            quantization_ratio = quantized_layers / total_linear_layers
+            logger.info(f"量化率: {quantization_ratio:.2%} ({quantized_layers}/{total_linear_layers})")
+
+            if quantization_ratio < 0.5:
+                logger.warning(f"量化率低于50%，模型可能未完全量化")
+                if quantization_ratio > 0.1:
+                    logger.info("部分层已量化，将继续使用")
+                    return True
+                else:
+                    logger.warning("几乎没有层被量化，模型量化可能失败")
+                    return False
 
         if not is_quantized:
             logger.warning(f"未检测到量化层，模型可能未正确量化为{quantization}")
@@ -153,6 +172,7 @@ def verify_quantization(model, quantization, logger):
         return True
     except Exception as e:
         logger.error(f"验证量化时出错: {e}")
+        logger.error(traceback.format_exc())
         return False
 
 def load_model_fallback(model_class, model_path, logger):
@@ -168,6 +188,13 @@ def load_model_fallback(model_class, model_path, logger):
     """
     try:
         # 使用最基本的配置加载模型
+        logger.info("尝试使用非量化模式加载模型...")
+
+        # 清理内存先
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         model = model_class.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -179,6 +206,21 @@ def load_model_fallback(model_class, model_path, logger):
     except Exception as e:
         logger.error(f"非量化模式加载也失败: {e}")
         logger.error(traceback.format_exc())
+
+        # 尝试使用低精度加载
+        try:
+            logger.info("尝试使用半精度(float16)加载模型...")
+            model = model_class.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                torch_dtype=torch.float16
+            )
+            logger.info("使用半精度成功加载模型!")
+            return model
+        except Exception as e2:
+            logger.error(f"半精度加载也失败: {e2}")
+            logger.error(traceback.format_exc())
+
         raise RuntimeError("无法加载模型，所有尝试均失败") from e
 
 def load_quantized_model(model_class, model_path, quantization="None", **kwargs):
@@ -265,6 +307,17 @@ def load_quantized_model(model_class, model_path, quantization="None", **kwargs)
                         logger.info("8-bit量化: 内存占用约为原始模型的1/4，性能影响很小")
                 else:
                     logger.warning("量化验证失败，但模型已加载")
+                    logger.info("将继续使用已加载的模型，但可能未达到预期的内存优化效果")
+
+            # 输出模型结构信息
+            try:
+                param_count = sum(p.numel() for p in model.parameters())
+                trainable_param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                logger.info(f"模型总参数量: {param_count:,}")
+                logger.info(f"可训练参数量: {trainable_param_count:,}")
+                logger.info(f"参数可训练比例: {trainable_param_count/param_count:.2%}")
+            except Exception as e:
+                logger.warning(f"计算参数量出错: {e}")
 
             return model
 

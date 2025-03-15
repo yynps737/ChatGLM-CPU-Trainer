@@ -20,6 +20,10 @@ services:
         MEM_GB=$$((MEM_TOTAL / 1024 / 1024));
         echo \"检测到系统内存: $${MEM_GB}GB\";
         
+        # 检测CPU信息
+        CPU_CORES=$$(grep -c ^processor /proc/cpuinfo);
+        echo \"检测到CPU核心数: $${CPU_CORES}\";
+        
         # 根据内存大小选择适当的配置
         if [ $$MEM_GB -lt 6 ]; then
           MEMORY_CONFIG='4gb';
@@ -37,7 +41,7 @@ services:
         elif [ $$MEM_GB -lt 12 ]; then
           MEMORY_CONFIG='8gb';
           MEMORY_LIMIT='7.5G';
-          NUM_THREADS=4;
+          NUM_THREADS=$$((CPU_CORES > 4 ? 4 : CPU_CORES));
           QUANT_LEVEL='4bit';
           MAX_SEQ_LEN=64;
           MAX_SAMPLES=200;
@@ -50,7 +54,7 @@ services:
         elif [ $$MEM_GB -lt 24 ]; then
           MEMORY_CONFIG='16gb';
           MEMORY_LIMIT='15G';
-          NUM_THREADS=8;
+          NUM_THREADS=$$((CPU_CORES > 8 ? 8 : CPU_CORES));
           QUANT_LEVEL='8bit';
           MAX_SEQ_LEN=128;
           MAX_SAMPLES=800;
@@ -63,7 +67,7 @@ services:
         else
           MEMORY_CONFIG='32gb';
           MEMORY_LIMIT='30G';
-          NUM_THREADS=16;
+          NUM_THREADS=$$((CPU_CORES > 16 ? 16 : CPU_CORES));
           QUANT_LEVEL='None';
           MAX_SEQ_LEN=256;
           MAX_SAMPLES=2000;
@@ -99,6 +103,7 @@ services:
         echo \"量化级别: $${QUANT_LEVEL}\";
         echo \"序列长度: $${MAX_SEQ_LEN}, 样本数: $${MAX_SAMPLES}\";
         echo \"批大小: $${BATCH_SIZE}, 梯度累积: $${GRAD_ACCUM}\";
+        echo \"线程数: $${NUM_THREADS}\";
         
         echo \"====== 环境配置完成 ======\";
         
@@ -112,6 +117,10 @@ services:
           echo \"已找到数据集文件: /app/data/input/dataset.txt\";
           LINES=$$(wc -l < /app/data/input/dataset.txt);
           echo \"数据集包含 $${LINES} 行文本\";
+          
+          # 显示数据集预览
+          echo \"数据集预览 (前3行):\";
+          head -n 3 /app/data/input/dataset.txt;
         fi;
       "
 
@@ -148,11 +157,23 @@ services:
       ${MONITOR_MEMORY:+--monitor_memory}
       --memory_check_interval ${MEMORY_CHECK_INTERVAL:-60}
       --performance_log_steps ${PERFORMANCE_LOG_STEPS:-100}
+      --warmup_ratio 0.1
+      --weight_decay 0.01
+      --optimizer adamw
+      --save_steps 500
+      --save_total_limit 3
     deploy:
       resources:
         limits:
           memory: ${MEMORY_LIMIT:-8G}
+        reservations:
+          memory: ${MEMORY_LIMIT:-8G}
     restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep '[p]ython -m app.train' || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   # 预测服务
   predict:
@@ -178,8 +199,50 @@ services:
       --quantization ${QUANT_LEVEL:-4bit}
       --prompt "${PROMPT:-请介绍一下人工智能的发展历史。}"
       --max_length ${MAX_LENGTH:-1024}
+      --temperature 0.7
+      --top_p 0.9
+      --top_k 40
+      --monitor_memory
+      --verbose
     deploy:
       resources:
         limits:
+          memory: ${MEMORY_LIMIT:-8G}
+        reservations:
+          memory: ${MEMORY_LIMIT:-8G}
+    restart: "no"
+
+  # 批量预测服务
+  batch-predict:
+    image: chatglm-cpu-trainer
+    container_name: chatglm-batch-predict
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ~/.cache/huggingface:/root/.cache/huggingface  # 挂载Hugging Face缓存目录
+      - ./.env:/app/.env
+    env_file:
+      - ./.env
+    environment:
+      - PYTHONPATH=/app
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface  # 设置模型缓存路径
+    command: >
+      python -m app.predict
+      --model_path /app/models/chatglm-lora
+      --base_model_path THUDM/chatglm2-6b
+      --quantization ${QUANT_LEVEL:-4bit}
+      --input_file /app/data/input/prompts.txt
+      --output_file /app/data/output/batch_predictions.json
+      --max_length ${MAX_LENGTH:-1024}
+      --batch_mode
+      --monitor_memory
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-8G}
+        reservations:
           memory: ${MEMORY_LIMIT:-8G}
     restart: "no"

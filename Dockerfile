@@ -1,4 +1,4 @@
-FROM python:3.8-slim-bullseye
+FROM python:3.10-slim-bullseye
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_ENDPOINT=https://hf-mirror.com \
     CUDA_VISIBLE_DEVICES=""
 
-# 安装系统依赖
+# 安装系统依赖（一次性操作以减少层数）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
@@ -18,12 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 设置工作目录
 WORKDIR /app
 
-# 升级pip
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# 复制并安装依赖（一次性安装以确保兼容性）
+# 升级pip并安装依赖（一次性操作以减少层数）
 COPY ./requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 # 复制应用代码
 COPY ./app /app/app/
