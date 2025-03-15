@@ -24,7 +24,7 @@ echo Available memory: %MEM_FREE_GB% GB
 
 rem Create output directory
 echo Creating output directory...
-if not exist "..\output\chatglm-lora" mkdir "..\output\chatglm-lora"
+if not exist "output\chatglm-lora" mkdir "output\chatglm-lora"
 
 rem Set ultra low resource configuration
 set MODEL=THUDM/chatglm2-6b
@@ -43,10 +43,10 @@ echo - LoRA rank: %LORA_R%
 echo.
 
 rem Start training
-echo Starting training, log will be saved to ..\output\chatglm-lora\train_log.txt
+echo Starting training, log will be saved to output\chatglm-lora\train_log.txt
 echo Using ultra low resource configuration for limited memory...
 
-python ..\simple_train.py ^
+python simple_train.py ^
   --model_name_or_path %MODEL% ^
   --dataset_name %DATASET% ^
   --use_lora ^
@@ -56,19 +56,19 @@ python ..\simple_train.py ^
   --max_samples %MAX_SAMPLES% ^
   --per_device_train_batch_size 1 ^
   --gradient_accumulation_steps 16 ^
-  --output_dir ..\output\chatglm-lora > ..\output\chatglm-lora\train_log.txt 2>&1
+  --output_dir output\chatglm-lora > output\chatglm-lora\train_log.txt 2>&1
 
 rem Check if training was successful
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo Training completed successfully!
-    echo Model saved to ..\output\chatglm-lora
+    echo Model saved to output\chatglm-lora
     echo.
     echo Test model:
-    echo python ..\test_model.py --model_path ..\output\chatglm-lora --base_model_path %MODEL% --is_peft_model --quantization 4bit --prompt "Please explain deep learning briefly"
+    echo python test_model.py --model_path output\chatglm-lora --base_model_path %MODEL% --is_peft_model --quantization 4bit --prompt "Please explain deep learning briefly"
 ) else (
     echo.
-    echo Training failed! Please check log file: ..\output\chatglm-lora\train_log.txt
+    echo Training failed! Please check log file: output\chatglm-lora\train_log.txt
     echo.
     echo Common errors:
     echo 1. Out of memory error (OOM) - Try reducing sample count and sequence length
@@ -78,7 +78,7 @@ if %ERRORLEVEL% EQU 0 (
     echo.
     echo Tail of log file:
     echo ----------------
-    powershell -command "Get-Content ..\output\chatglm-lora\train_log.txt -Tail 20"
+    powershell -command "Get-Content output\chatglm-lora\train_log.txt -Tail 20"
 )
 
 echo.

@@ -20,6 +20,9 @@ scripts\setup_windows.bat
 
 # 2. 开始训练
 scripts\train_windows.bat
+
+# 3. 简化版训练 (极低资源环境)
+train_simple.bat
 ```
 
 ### Linux环境
@@ -32,6 +35,9 @@ chmod +x scripts/setup_linux.sh
 # 2. 开始训练
 chmod +x scripts/train_linux.sh
 ./scripts/train_linux.sh
+
+# 3. 简化版训练 (极低资源环境)
+python simple_train.py --use_lora --quantization 4bit --max_samples 1000
 ```
 
 ## 支持的模型
@@ -112,8 +118,10 @@ chatglm-cpu-trainer/
 ├── examples/                     # 示例目录
 ├── simple_train.py               # 简化版训练脚本
 ├── train.py                      # 标准训练脚本
+├── train_simple.bat              # Windows简化训练脚本
 ├── evaluate.py                   # 评估脚本
 ├── test_model.py                 # 模型测试脚本
+├── memory_monitor.py             # 内存监控工具
 ├── requirements.txt              # 依赖列表
 └── requirements_minimal.txt      # 最小依赖列表
 ```
@@ -125,10 +133,11 @@ chatglm-cpu-trainer/
 **症状**: 训练过程中出现OOM错误
 
 **解决方案**:
-1. 使用4bit量化: `--quantization 4bit`
-2. 减小序列长度: `--max_seq_length 128`
-3. 限制样本数量: `--max_samples 2000`
-4. 减小LoRA秩: `--lora_r 4`
+1. 使用简化版训练: `train_simple.bat` 或 `python simple_train.py`
+2. 使用4bit量化: `--quantization 4bit`
+3. 减小序列长度: `--max_seq_length 128`
+4. 限制样本数量: `--max_samples 2000`
+5. 减小LoRA秩: `--lora_r 4`
 
 ### 量化错误
 
@@ -136,7 +145,11 @@ chatglm-cpu-trainer/
 
 **解决方案**:
 ```bash
+# Windows
 pip install -U accelerate bitsandbytes-windows
+
+# Linux
+pip install -U accelerate bitsandbytes
 ```
 
 ### 训练速度慢
