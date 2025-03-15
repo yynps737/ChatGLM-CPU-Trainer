@@ -93,6 +93,7 @@ class PerformanceTracker:
         self.epoch_start_time = None
         self.step_start_time = None
         self.step_tokens = 0
+        self.step_samples = 0  # 修复：添加实际批量大小记录
         self.total_tokens = 0
         self.total_samples = 0
         self.steps_taken = 0
@@ -100,7 +101,7 @@ class PerformanceTracker:
 
         # 创建性能日志文件
         os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
-        with open(self.log_file, 'w') as f:
+        with open(self.log_file, 'w', encoding='utf-8') as f:
             f.write("timestamp,epoch,step,samples_per_second,tokens_per_second,loss,memory_used_mb\n")
 
     def start_epoch(self, epoch):
@@ -113,6 +114,7 @@ class PerformanceTracker:
         self.step_start_time = time.time()
         # 每个样本的token数量 = 序列长度
         self.step_tokens = batch_size * sequence_length
+        self.step_samples = batch_size  # 修复：记录正确的样本数
 
     def end_step(self, epoch, global_step, loss, memory_used=None):
         """记录步骤结束和性能指标"""
@@ -121,17 +123,18 @@ class PerformanceTracker:
 
         step_time = time.time() - self.step_start_time
         self.total_tokens += self.step_tokens
-        self.total_samples += self.step_tokens // self.step_tokens
+        self.total_samples += self.step_samples  # 修复：使用正确的样本数
         self.steps_taken += 1
 
         # 计算性能指标
         tokens_per_second = self.step_tokens / step_time if step_time > 0 else 0
-        samples_per_second = (self.step_tokens // self.step_tokens) / step_time if step_time > 0 else 0
+        samples_per_second = self.step_samples / step_time if step_time > 0 else 0  # 修复：使用正确的样本数计算
 
-        # 记录到CSV
-        with open(self.log_file, 'a') as f:
+        # 记录到CSV - 修复：添加引号确保格式正确
+        with open(self.log_file, 'a', encoding='utf-8') as f:
             timestamp = datetime.now().isoformat()
-            f.write(f"{timestamp},{epoch},{global_step},{samples_per_second:.4f},{tokens_per_second:.4f},{loss},{memory_used or 0}\n")
+            loss_str = float(loss) if isinstance(loss, (int, float)) else str(loss).replace(",", ";")  # 修复：处理逗号
+            f.write(f"{timestamp},{epoch},{global_step},{samples_per_second:.4f},{tokens_per_second:.4f},\"{loss_str}\",{memory_used or 0}\n")
 
         return {
             "tokens_per_second": tokens_per_second,
@@ -167,12 +170,22 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
     """训练循环"""
     logger.info("开始训练...")
 
+    # 检查数据集是否为空
+    if len(tokenized_dataset) == 0:
+        logger.error("数据集为空，无法开始训练")
+        return model
+
     # 设置数据加载器
     data_loader = DataLoader(
         tokenized_dataset,
         batch_size=args.per_device_train_batch_size,
         shuffle=True
     )
+
+    # 检查数据加载器是否有数据
+    if len(data_loader) == 0:
+        logger.error("数据加载器为空，无法开始训练。可能是批大小过大或数据集为空。")
+        return model
 
     # 设置优化器
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
@@ -205,6 +218,11 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
             for step, batch in enumerate(progress_bar):
+                # 检查输入张量维度
+                if len(batch['input_ids'].shape) != 2:
+                    logger.warning(f"输入张量维度异常: {batch['input_ids'].shape}，预期为 [batch_size, seq_len]")
+                    continue
+
                 # 记录步骤开始时间和token数
                 perf_tracker.start_step(
                     batch_size=len(batch['input_ids']),
@@ -217,11 +235,16 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
                 labels = batch['labels']
 
                 # 前向传播
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels
-                )
+                try:
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels
+                    )
+                except RuntimeError as e:
+                    logger.error(f"前向传播错误: {e}")
+                    logger.info("跳过当前批次")
+                    continue
 
                 loss = outputs.loss / args.gradient_accumulation_steps
                 loss.backward()
@@ -252,10 +275,11 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
                             memory_used=memory_used
                         )
                         # 更新进度条
-                        progress_bar.set_postfix({
-                            'loss': accumulated_loss * args.gradient_accumulation_steps,
-                            'samples/s': f"{metrics['samples_per_second']:.2f}"
-                        })
+                        if metrics:  # 确保metrics不为None
+                            progress_bar.set_postfix({
+                                'loss': accumulated_loss * args.gradient_accumulation_steps,
+                                'samples/s': f"{metrics['samples_per_second']:.2f}"
+                            })
 
                     accumulated_loss = 0
 
@@ -268,7 +292,12 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
                         logger.info(f"保存检查点 epoch {epoch+1}, step {step+1}")
                         save_dir = os.path.join(args.output_dir, f"checkpoint-epoch{epoch+1}-step{step+1}")
                         os.makedirs(save_dir, exist_ok=True)
-                        model.save_pretrained(save_dir)
+
+                        try:
+                            model.save_pretrained(save_dir)
+                            logger.info(f"检查点保存成功: {save_dir}")
+                        except Exception as e:
+                            logger.error(f"保存检查点失败: {str(e)}")
 
                         # 每个检查点打印一次当前内存使用情况
                         if memory_monitor:
@@ -283,7 +312,12 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
             # 保存每个epoch的模型
             epoch_dir = os.path.join(args.output_dir, f"epoch-{epoch+1}")
             os.makedirs(epoch_dir, exist_ok=True)
-            model.save_pretrained(epoch_dir)
+
+            try:
+                model.save_pretrained(epoch_dir)
+                logger.info(f"Epoch {epoch+1} 模型保存成功: {epoch_dir}")
+            except Exception as e:
+                logger.error(f"保存Epoch {epoch+1} 模型失败: {str(e)}")
 
             logger.info(f"第 {epoch+1} 轮结束, 平均损失: {running_loss / len(data_loader)}")
 
@@ -295,6 +329,16 @@ def train(args, model, tokenized_dataset, memory_monitor=None):
             if memory_monitor:
                 memory_monitor.print_memory_info(detailed=True)
 
+    except Exception as e:
+        logger.error(f"训练过程中发生错误: {str(e)}")
+        # 尝试保存当前模型
+        try:
+            emergency_dir = os.path.join(args.output_dir, "emergency-save")
+            os.makedirs(emergency_dir, exist_ok=True)
+            model.save_pretrained(emergency_dir)
+            logger.info(f"模型已紧急保存到: {emergency_dir}")
+        except:
+            logger.error("无法进行紧急保存")
     finally:
         # 停止内存监控
         if memory_monitor:
@@ -332,6 +376,11 @@ def main():
     logger.info(f"批大小: {args.per_device_train_batch_size}, 梯度累积: {args.gradient_accumulation_steps}")
     logger.info("=" * 50)
 
+    # 检查文件是否存在
+    if not os.path.exists(args.dataset_path):
+        logger.error(f"数据集文件不存在: {args.dataset_path}")
+        return
+
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -348,35 +397,45 @@ def main():
     gc.collect()
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-    # 加载模型和分词器
-    model, tokenizer = load_model_and_tokenizer(args.model_name_or_path, args.quantization)
+    try:
+        # 加载模型和分词器
+        model, tokenizer = load_model_and_tokenizer(args.model_name_or_path, args.quantization)
 
-    # 添加LoRA适配器
-    logger.info("添加LoRA适配器...")
-    peft_config = create_lora_config(args)
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+        # 添加LoRA适配器
+        logger.info("添加LoRA适配器...")
+        peft_config = create_lora_config(args)
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
 
-    # 准备数据集前再次清理内存
-    gc.collect()
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        # 准备数据集前再次清理内存
+        gc.collect()
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-    # 准备数据集
-    tokenized_dataset = prepare_dataset(
-        args.dataset_path,
-        args.text_column,
-        args.max_samples,
-        tokenizer,
-        args.max_seq_length
-    )
+        # 准备数据集
+        tokenized_dataset = prepare_dataset(
+            args.dataset_path,
+            args.text_column,
+            args.max_samples,
+            tokenizer,
+            args.max_seq_length
+        )
 
-    # 训练模型
-    model = train(args, model, tokenized_dataset, memory_monitor)
+        # 训练模型
+        model = train(args, model, tokenized_dataset, memory_monitor)
 
-    # 保存最终模型
-    logger.info(f"保存模型到 {args.output_dir}")
-    model.save_pretrained(args.output_dir)  # 只保存LoRA权重
-    tokenizer.save_pretrained(args.output_dir)  # 保存分词器
+        # 保存最终模型
+        logger.info(f"保存模型到 {args.output_dir}")
+        try:
+            model.save_pretrained(args.output_dir)  # 只保存LoRA权重
+            tokenizer.save_pretrained(args.output_dir)  # 保存分词器
+            logger.info("模型和分词器保存成功")
+        except Exception as e:
+            logger.error(f"保存模型失败: {str(e)}")
+
+    except Exception as e:
+        logger.error(f"发生错误: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
 
     # 计算总训练时间
     total_time = time.time() - start_time

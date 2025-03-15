@@ -12,6 +12,7 @@ from datasets import Dataset
 import hashlib
 import json
 from pathlib import Path
+import traceback
 
 # 导入量化模块
 from app.quantization import load_quantized_model
@@ -55,6 +56,19 @@ def get_model_cache_path(model_path, quantization="None"):
 
     return cache_dir / f"{cache_hash}.json"
 
+def check_transformers_version():
+    """检查transformers版本兼容性"""
+    logger = logging.getLogger(__name__)
+    try:
+        import transformers
+        logger.info(f"transformers版本: {transformers.__version__}")
+
+        if transformers.__version__ < "4.30.0":
+            logger.warning(f"当前transformers版本({transformers.__version__})可能不完全支持指定的量化参数")
+            logger.warning("推荐版本为 4.30.0 或更高")
+    except ImportError:
+        logger.warning("无法导入transformers库")
+
 def load_model_and_tokenizer(model_path, quantization="None"):
     """加载模型和分词器
 
@@ -68,6 +82,9 @@ def load_model_and_tokenizer(model_path, quantization="None"):
     logger = logging.getLogger(__name__)
     logger.info(f"加载模型: {model_path}")
 
+    # 检查transformers版本兼容性
+    check_transformers_version()
+
     # 主动清理内存，确保有足够空间加载模型
     gc.collect()
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -79,27 +96,33 @@ def load_model_and_tokenizer(model_path, quantization="None"):
     if cache_exists:
         logger.info(f"发现本地模型缓存记录: {cache_path}")
         try:
-            with open(cache_path, 'r') as f:
+            with open(cache_path, 'r', encoding='utf-8') as f:
                 cache_info = json.load(f)
             logger.info(f"上次下载时间: {cache_info.get('timestamp', '未知')}")
             logger.info(f"本地路径: {cache_info.get('local_path', '未知')}")
         except Exception as e:
             logger.warning(f"读取缓存信息失败: {e}")
             cache_exists = False
-
-    if not cache_exists:
+    else:
         logger.info("未找到本地缓存记录，模型将从Hugging Face下载")
 
     # 加载分词器
-    logger.info("加载分词器...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True
-    )
+    try:
+        logger.info("加载分词器...")
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True
+        )
 
-    # 确保分词器有正确的特殊标记
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # 确保分词器有正确的特殊标记
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        logger.info("分词器加载成功")
+    except Exception as e:
+        logger.error(f"加载分词器失败: {e}")
+        logger.error(traceback.format_exc())
+        raise
 
     # 使用量化模块加载模型
     logger.info("加载模型...")
@@ -109,13 +132,15 @@ def load_model_and_tokenizer(model_path, quantization="None"):
     if not cache_exists:
         try:
             from datetime import datetime
+            # 修复：展开~路径
+            cache_dir = os.path.expanduser(os.environ.get("TRANSFORMERS_CACHE", "~/.cache/huggingface"))
             cache_info = {
                 "model_path": model_path,
                 "quantization": quantization,
                 "timestamp": datetime.now().isoformat(),
-                "local_path": os.path.join(os.environ.get("TRANSFORMERS_CACHE", "~/.cache/huggingface"), "models--" + model_path.replace("/", "--"))
+                "local_path": os.path.join(cache_dir, "models--" + model_path.replace("/", "--"))
             }
-            with open(cache_path, 'w') as f:
+            with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(cache_info, f, indent=2)
             logger.info(f"已创建模型缓存记录: {cache_path}")
         except Exception as e:
@@ -141,6 +166,11 @@ def prepare_dataset(dataset_path, text_column, max_samples, tokenizer, max_seq_l
     logger = logging.getLogger(__name__)
     logger.info(f"加载本地数据集: {dataset_path}")
 
+    # 检查文件是否存在
+    if not os.path.exists(dataset_path):
+        logger.error(f"数据集文件不存在: {dataset_path}")
+        raise FileNotFoundError(f"找不到数据集文件: {dataset_path}")
+
     # 加载大型数据集前主动清理内存
     gc.collect()
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -148,17 +178,45 @@ def prepare_dataset(dataset_path, text_column, max_samples, tokenizer, max_seq_l
     # 根据文件类型加载数据
     file_ext = os.path.splitext(dataset_path)[1].lower()
 
-    if file_ext == '.csv':
-        df = pd.read_csv(dataset_path)
-    elif file_ext == '.json' or file_ext == '.jsonl':
-        df = pd.read_json(dataset_path, lines=file_ext == '.jsonl')
-    elif file_ext == '.txt':
-        # 简单文本文件，一行一个样本
-        with open(dataset_path, 'r', encoding='utf-8') as f:
-            texts = [line.strip() for line in f if line.strip()]
-        df = pd.DataFrame({text_column: texts})
-    else:
-        raise ValueError(f"不支持的文件类型: {file_ext}")
+    try:
+        if file_ext == '.csv':
+            # 修复：添加编码参数
+            df = pd.read_csv(dataset_path, encoding='utf-8')
+        elif file_ext == '.json' or file_ext == '.jsonl':
+            df = pd.read_json(dataset_path, lines=file_ext == '.jsonl', encoding='utf-8')
+        elif file_ext == '.txt':
+            # 简单文本文件，一行一个样本
+            with open(dataset_path, 'r', encoding='utf-8') as f:
+                texts = [line.strip() for line in f if line.strip()]
+
+            if not texts:
+                logger.error(f"数据集文件为空: {dataset_path}")
+                raise ValueError("数据集文件不包含任何有效文本")
+
+            df = pd.DataFrame({text_column: texts})
+        else:
+            error_msg = f"不支持的文件类型: {file_ext}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+    except Exception as e:
+        logger.error(f"读取数据集出错: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+    # 检查数据是否为空
+    if df.empty:
+        logger.error("数据集为空")
+        raise ValueError("数据集为空，无法继续处理")
+
+    # 检查文本列是否存在
+    if text_column not in df.columns:
+        logger.error(f"文本列 '{text_column}' 不存在于数据集中。可用列: {', '.join(df.columns)}")
+        # 如果只有一列，自动使用那一列
+        if len(df.columns) == 1:
+            text_column = df.columns[0]
+            logger.info(f"自动使用唯一可用列: '{text_column}'")
+        else:
+            raise ValueError(f"文本列 '{text_column}' 不存在")
 
     # 转换为Hugging Face数据集格式
     dataset = Dataset.from_pandas(df)
@@ -179,31 +237,61 @@ def prepare_dataset(dataset_path, text_column, max_samples, tokenizer, max_seq_l
         texts = examples[text_column]
 
         # 分词并截断
-        tokenized = tokenizer(
-            texts,
-            truncation=True,
-            max_length=max_seq_length,
-            padding="max_length",
-            return_tensors="pt"
-        )
+        try:
+            tokenized = tokenizer(
+                texts,
+                truncation=True,
+                max_length=max_seq_length,
+                padding="max_length",
+                return_tensors="pt"
+            )
 
-        # 为因果语言模型准备标签
-        tokenized["labels"] = tokenized["input_ids"].clone()
+            # 为因果语言模型准备标签
+            tokenized["labels"] = tokenized["input_ids"].clone()
 
-        return tokenized
+            return tokenized
+        except Exception as e:
+            logger.error(f"分词过程中出错: {str(e)}")
+            logger.error(f"错误样本: {texts[:100] if isinstance(texts, str) else [t[:100] for t in texts[:3]]}")
+            raise
 
     # 处理数据集
     logger.info(f"对数据集进行分词处理...")
-    tokenized_dataset = dataset.map(
-        tokenize_function,
-        batched=True,
-        num_proc=1,  # CPU环境使用单线程
-        remove_columns=dataset.column_names
-    )
+    try:
+        tokenized_dataset = dataset.map(
+            tokenize_function,
+            batched=True,
+            num_proc=1,  # CPU环境使用单线程
+            remove_columns=dataset.column_names
+        )
+    except Exception as e:
+        logger.error(f"数据集处理出错: {str(e)}")
+        logger.error(traceback.format_exc())
+        # 创建一个示例，检测是否能正常分词
+        logger.info("尝试对单个样本进行分词测试...")
+        try:
+            sample_text = dataset[0][text_column]
+            logger.info(f"样本文本: {sample_text[:100]}...")
+            sample_tokens = tokenizer(
+                sample_text,
+                truncation=True,
+                max_length=max_seq_length,
+                padding="max_length",
+                return_tensors="pt"
+            )
+            logger.info(f"样本分词成功，形状: {sample_tokens['input_ids'].shape}")
+        except Exception as sample_error:
+            logger.error(f"样本分词也失败: {str(sample_error)}")
+        raise
 
     # 再次清理内存
     del dataset
     gc.collect()
+
+    # 检查处理后的数据集
+    if len(tokenized_dataset) == 0:
+        logger.error("处理后的数据集为空")
+        raise ValueError("处理后数据集为空，无法继续训练")
 
     tokenized_dataset.set_format("torch")
     logger.info("数据集准备完成")

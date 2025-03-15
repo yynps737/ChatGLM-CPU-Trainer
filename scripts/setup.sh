@@ -67,7 +67,17 @@ else
 fi
 
 # 创建或更新.env文件
-cp -f .env.example .env
+if [ -f .env.example ]; then
+    print_info "使用.env.example模板创建.env文件..."
+    cp -f .env.example .env
+elif [ -f .env ]; then
+    print_info "已找到.env文件，将进行更新..."
+else
+    print_error "找不到.env.example模板文件！"
+    exit 1
+fi
+
+# 根据操作系统使用不同的sed命令
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS的sed语法不同
     sed -i '' "s/MEMORY_CONFIG=default/MEMORY_CONFIG=$memory_config/" .env
@@ -82,16 +92,50 @@ print_info "环境配置已更新为${memory_config}配置"
 
 # 建立必要的目录
 mkdir -p data/input data/output models
+
+# 确保Hugging Face缓存目录存在并设置权限
+CACHE_DIR="$HOME/.cache/huggingface"
+mkdir -p "$CACHE_DIR"
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    # 在Linux上设置权限
+    chmod -R 777 "$CACHE_DIR" 2>/dev/null || print_warning "无法设置缓存目录权限，容器可能无法写入缓存"
+fi
+
 print_info "目录结构已创建"
+
+# 检查示例数据集是否存在
+if [ ! -f "data/input/dataset.txt" ]; then
+    print_warning "未找到示例数据集文件 data/input/dataset.txt"
+    print_info "提示: 您需要在训练前准备自己的数据集"
+else
+    print_info "已找到示例数据集文件"
+fi
 
 # 提示用户下一步操作
 print_info "设置完成! 接下来的步骤:"
 print_info "1. 将训练数据放入data/input/dataset.txt文件"
 print_info "2. 构建Docker镜像: docker build -t chatglm-cpu-trainer ."
+
 if [[ "$use_new_compose" == true ]]; then
     print_info "3. 开始训练: docker compose run train"
     print_info "4. 测试模型: docker compose run predict"
 else
     print_info "3. 开始训练: docker-compose run train"
     print_info "4. 测试模型: docker-compose run predict"
+fi
+
+# 提供一些可选的自定义训练命令示例
+print_info "\n自定义训练示例:"
+print_info "- 使用更少样本进行快速测试:"
+if [[ "$use_new_compose" == true ]]; then
+    print_info "  MAX_SAMPLES=10 docker compose run train"
+else
+    print_info "  MAX_SAMPLES=10 docker-compose run train"
+fi
+
+print_info "- 自定义提示词进行测试:"
+if [[ "$use_new_compose" == true ]]; then
+    print_info "  PROMPT=\"请介绍一下深度学习技术\" docker compose run predict"
+else
+    print_info "  PROMPT=\"请介绍一下深度学习技术\" docker-compose run predict"
 fi
