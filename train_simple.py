@@ -1,5 +1,5 @@
 """
-ChatGLM 简化版训练脚本 - 专为低资源CPU环境设计
+ChatGLM 简化版训练脚本 - 专为低资源CPU环境设计 (兼容版)
 """
 
 import os
@@ -7,17 +7,22 @@ import argparse
 import logging
 import torch
 import gc
+import pandas as pd
 from transformers import (
     AutoTokenizer,
     AutoModel,
-    Trainer,
     TrainingArguments,
     DataCollatorForLanguageModeling,
     set_seed
 )
-from datasets import load_dataset
+from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType
 import platform
+
+# 完全避免使用Trainer类，使用简化的训练循环
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
+from tqdm import tqdm
 
 # 设置日志
 logging.basicConfig(
@@ -44,8 +49,10 @@ def parse_args():
                         help="模型量化类型")
 
     # 数据参数
-    parser.add_argument("--dataset_name", type=str, default="uer/cluecorpussmall",
-                        help="Hugging Face数据集名称")
+    parser.add_argument("--dataset_name", type=str, default=None,
+                    help="Hugging Face数据集名称")
+    parser.add_argument("--dataset_path", type=str, default=None,
+                    help="本地数据集路径，支持.csv, .json, .jsonl, .txt格式")
     parser.add_argument("--text_column", type=str, default="text", help="文本列名称")
     parser.add_argument("--max_seq_length", type=int, default=128, help="最大序列长度")
     parser.add_argument("--max_samples", type=int, default=1000, help="要使用的最大样本数")
@@ -157,18 +164,26 @@ def create_lora_config(args):
         inference_mode=False
     )
 
-def prepare_dataset(args, tokenizer):
-    """准备数据集"""
-    logger.info(f"加载数据集: {args.dataset_name}")
+def prepare_local_dataset(args, tokenizer):
+    """准备本地数据集"""
+    logger.info(f"加载本地数据集: {args.dataset_path}")
 
-    # 加载数据集
-    dataset = load_dataset(args.dataset_name)
-    if "train" in dataset:
-        dataset = dataset["train"]
+    # 根据文件类型加载数据
+    file_path = args.dataset_path
+    if file_path.endswith('.csv'):
+        df = pd.read_csv(file_path)
+    elif file_path.endswith('.json'):
+        df = pd.read_json(file_path, lines=True if file_path.endswith('.jsonl') else False)
+    elif file_path.endswith('.txt'):
+        # 简单文本文件，一行一个样本
+        with open(file_path, 'r', encoding='utf-8') as f:
+            texts = [line.strip() for line in f if line.strip()]
+        df = pd.DataFrame({args.text_column: texts})
     else:
-        # 使用第一个可用分割
-        first_key = list(dataset.keys())[0]
-        dataset = dataset[first_key]
+        raise ValueError(f"不支持的文件类型: {file_path}")
+
+    # 转换为Hugging Face数据集格式
+    dataset = Dataset.from_pandas(df)
 
     # 限制样本数量
     if args.max_samples and args.max_samples < len(dataset):
@@ -177,21 +192,9 @@ def prepare_dataset(args, tokenizer):
 
     logger.info(f"加载了 {len(dataset)} 个样本")
 
-    # 检查文本列是否存在
-    if args.text_column not in dataset.column_names:
-        available_columns = dataset.column_names
-        logger.warning(f"文本列 '{args.text_column}' 不在数据集中。可用列: {available_columns}")
-        # 尝试使用第一个字符串列
-        for col in available_columns:
-            if len(dataset) > 0 and isinstance(dataset[0][col], str):
-                args.text_column = col
-                logger.info(f"使用 '{args.text_column}' 作为文本列")
-                break
-
     # 分词函数
     def tokenize_function(examples):
         texts = examples[args.text_column]
-        # ChatGLM自动添加EOS，不需要额外添加
 
         # 分词并截断
         tokenized = tokenizer(
@@ -220,6 +223,73 @@ def prepare_dataset(args, tokenizer):
 
     return tokenized_dataset
 
+def train(args, model, tokenized_dataset):
+    """简化的训练循环，避免使用Trainer"""
+    logger.info("开始手动训练循环...")
+
+    # 设置数据加载器
+    data_loader = DataLoader(
+        tokenized_dataset,
+        batch_size=args.per_device_train_batch_size,
+        shuffle=True
+    )
+
+    # 设置优化器
+    optimizer = AdamW(model.parameters(), lr=args.learning_rate)
+
+    # 开始训练循环
+    model.train()
+
+    for epoch in range(args.num_train_epochs):
+        logger.info(f"开始训练第 {epoch+1}/{args.num_train_epochs} 轮")
+        running_loss = 0.0
+
+        progress_bar = tqdm(data_loader, desc=f"Epoch {epoch+1}")
+        accumulated_loss = 0
+
+        for step, batch in enumerate(progress_bar):
+            # 将数据移动到设备上
+            input_ids = batch['input_ids']
+            attention_mask = batch['attention_mask']
+            labels = batch['labels']
+
+            # 前向传播
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+
+            loss = outputs.loss / args.gradient_accumulation_steps
+            loss.backward()
+
+            accumulated_loss += loss.item()
+
+            # 梯度累积
+            if (step + 1) % args.gradient_accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+                running_loss += accumulated_loss
+                progress_bar.set_postfix({'loss': accumulated_loss * args.gradient_accumulation_steps})
+                accumulated_loss = 0
+
+                # 检查点保存
+                if (step + 1) % (args.gradient_accumulation_steps * 200) == 0:
+                    logger.info(f"保存检查点 epoch {epoch+1}, step {step+1}")
+                    save_dir = os.path.join(args.output_dir, f"checkpoint-epoch{epoch+1}-step{step+1}")
+                    os.makedirs(save_dir, exist_ok=True)
+                    model.save_pretrained(save_dir)
+
+        # 保存每个epoch的模型
+        epoch_dir = os.path.join(args.output_dir, f"epoch-{epoch+1}")
+        os.makedirs(epoch_dir, exist_ok=True)
+        model.save_pretrained(epoch_dir)
+
+        logger.info(f"第 {epoch+1} 轮结束, 平均损失: {running_loss / len(data_loader)}")
+
+    return model
+
 def main():
     """主函数"""
     # 解析参数
@@ -239,7 +309,10 @@ def main():
     logger.info("ChatGLM CPU 简化版训练脚本")
     logger.info("=" * 50)
     logger.info(f"模型: {args.model_name_or_path}")
-    logger.info(f"数据集: {args.dataset_name}")
+    if args.dataset_name:
+        logger.info(f"数据集: {args.dataset_name}")
+    if args.dataset_path:
+        logger.info(f"本地数据集: {args.dataset_path}")
     logger.info(f"输出目录: {args.output_dir}")
     logger.info(f"量化级别: {args.quantization}")
     logger.info(f"LoRA参数: r={args.lora_r}, alpha={args.lora_alpha}")
@@ -257,50 +330,13 @@ def main():
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    # 准备数据集
-    tokenized_dataset = prepare_dataset(args, tokenizer)
+    # 准备本地数据集
+    tokenized_dataset = prepare_local_dataset(args, tokenizer)
 
-    # 创建训练参数
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        weight_decay=0.01,
-        warmup_ratio=0.03,
-        logging_steps=10,
-        save_steps=200,
-        save_total_limit=2,
-        # CPU训练特定设置
-        fp16=False,  # CPU不支持FP16
-        bf16=False,  # CPU不支持BF16
-        # 其他设置
-        remove_unused_columns=False,
-        evaluation_strategy="no",
-        save_strategy="steps",
-    )
+    # 手动训练循环，避免使用Trainer
+    model = train(args, model, tokenized_dataset)
 
-    # 创建数据整理器
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False  # 因果语言模型
-    )
-
-    # 创建训练器
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_dataset,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-    )
-
-    # 开始训练
-    logger.info("开始训练...")
-    trainer.train()
-
-    # 保存模型
+    # 保存最终模型
     logger.info(f"保存模型到 {args.output_dir}")
     model.save_pretrained(args.output_dir)  # 只保存LoRA权重
     tokenizer.save_pretrained(args.output_dir)  # 保存分词器
