@@ -106,6 +106,36 @@ echo 输出文件: %OUTPUT_FILE%
 :: 获取当前目录的绝对路径
 for %%i in ("%~dp0..") do set PROJECT_DIR=%%~fi
 
+:: 检查Docker是否运行
+docker info >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [错误] Docker引擎未运行，请先启动Docker！
+    pause
+    goto :EOF
+)
+
+:: 检查目录权限
+echo [信息] 检查目录权限...
+mkdir "%PROJECT_DIR%\data\output" 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [警告] 无法创建输出目录，可能需要管理员权限
+)
+
+:: 检查模型是否存在
+if not exist "%PROJECT_DIR%\models\chatglm-lora" (
+    echo [警告] 未找到训练好的模型，将使用基础模型预测
+)
+
+:: 检查镜像是否存在
+docker image inspect chatglm-cpu-trainer >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [错误] 未找到chatglm-cpu-trainer镜像！请先构建镜像：
+    echo docker build -t chatglm-cpu-trainer .
+    pause
+    goto :EOF
+)
+
+echo [信息] 启动Docker容器进行预测...
 docker run --rm ^
     -v "%PROJECT_DIR%\data:/app/data" ^
     -v "%PROJECT_DIR%\models:/app/models" ^
@@ -122,5 +152,19 @@ docker run --rm ^
     --max_length "%MAX_LEN%" ^
     --output_file "%OUTPUT_FILE%"
 
-echo 预测完成！结果已保存到 %OUTPUT_FILE%
+if %ERRORLEVEL% NEQ 0 (
+    echo [错误] 预测过程中出现错误！请检查日志获取详细信息。
+) else (
+    echo [成功] 预测完成！结果已保存到 %OUTPUT_FILE%
+
+    :: 尝试显示结果
+    echo [信息] 预测结果:
+    echo ==================================
+    type "%PROJECT_DIR%\data\output\prediction.txt" 2>nul
+    if %ERRORLEVEL% NEQ 0 (
+        echo [警告] 无法显示预测结果，请手动查看输出文件
+    )
+    echo ==================================
+)
+
 pause

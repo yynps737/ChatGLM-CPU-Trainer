@@ -125,6 +125,31 @@ echo 量化级别: %QUANT%
 :: 获取当前目录的绝对路径
 for %%i in ("%~dp0..") do set PROJECT_DIR=%%~fi
 
+:: 检查Docker是否运行
+docker info >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [错误] Docker引擎未运行，请先启动Docker！
+    pause
+    goto :EOF
+)
+
+:: 检查目录权限
+echo [信息] 检查目录权限...
+mkdir "%PROJECT_DIR%\data\output" 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [警告] 无法创建输出目录，可能需要管理员权限
+)
+
+:: 检查镜像是否存在
+docker image inspect chatglm-cpu-trainer >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [错误] 未找到chatglm-cpu-trainer镜像！请先构建镜像：
+    echo docker build -t chatglm-cpu-trainer .
+    pause
+    goto :EOF
+)
+
+echo [信息] 启动Docker容器进行训练...
 docker run --rm ^
     -v "%PROJECT_DIR%\data:/app/data" ^
     -v "%PROJECT_DIR%\models:/app/models" ^
@@ -143,5 +168,10 @@ docker run --rm ^
     --per_device_train_batch_size "%BATCH_SIZE%" ^
     --gradient_accumulation_steps "%GRAD_ACCUM%"
 
-echo 训练完成！模型已保存到 %OUTPUT%
+if %ERRORLEVEL% NEQ 0 (
+    echo [错误] 训练过程中出现错误！请检查日志获取详细信息。
+) else (
+    echo [成功] 训练完成！模型已保存到 %OUTPUT%
+)
+
 pause

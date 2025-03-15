@@ -22,14 +22,26 @@ if %ERRORLEVEL% NEQ 0 (
     set use_new_compose=false
 )
 
-:: 获取系统内存信息
-for /f "tokens=4" %%a in ('systeminfo ^| findstr "Total Physical Memory"') do (
-    set mem_str=%%a
-    set mem_str=!mem_str:,=!
+:: 获取系统内存信息 - 使用更健壮的WMI方法
+echo [信息] 检测系统内存...
+set total_memory_gb=8
+for /f "skip=1" %%a in ('wmic ComputerSystem get TotalPhysicalMemory') do (
+    if not "%%a"=="" (
+        set /a total_memory_gb=%%a/1024/1024/1024
+        goto :memory_detected
+    )
 )
-set /a total_memory_mb=mem_str
-set /a total_memory_gb=total_memory_mb/1024
+:: 备用方法：尝试使用systeminfo
+if %total_memory_gb%==8 (
+    for /f "tokens=4" %%a in ('systeminfo ^| findstr "Total Physical Memory"') do (
+        set mem_str=%%a
+        set mem_str=!mem_str:,=!
+        set /a total_memory_mb=mem_str
+        set /a total_memory_gb=total_memory_mb/1024
+    )
+)
 
+:memory_detected
 :: 根据内存大小设置配置
 echo [信息] 检测到系统内存: %total_memory_gb%GB
 if %total_memory_gb% LSS 6 (
@@ -46,23 +58,64 @@ if %total_memory_gb% LSS 6 (
     echo [信息] 将使用32GB内存优化配置
 )
 
-:: 创建或更新.env文件
-if exist .env.example (
-    echo [信息] 使用.env.example模板创建.env文件...
-    copy /y .env.example .env
-) else if exist .env (
-    echo [信息] 已找到.env文件，将进行更新...
-) else (
-    echo [错误] 找不到.env.example模板文件！
-    goto :EOF
+:: 根据选择的配置生成.env文件
+echo [信息] 创建.env配置文件...
+echo # 配置文件由setup.bat自动生成 > .env
+echo MEMORY_CONFIG=%memory_config% >> .env
+
+if "%memory_config%"=="4gb" (
+    echo MEMORY_LIMIT=3.8G >> .env
+    echo NUM_THREADS=2 >> .env
+    echo QUANT_LEVEL=4bit >> .env
+    echo MAX_SEQ_LEN=32 >> .env
+    echo MAX_SAMPLES=30 >> .env
+    echo LORA_R=4 >> .env
+    echo BATCH_SIZE=1 >> .env
+    echo GRAD_ACCUM=32 >> .env
+    echo MAX_LENGTH=512 >> .env
+    echo MONITOR_MEMORY=true >> .env
+    echo MEMORY_CHECK_INTERVAL=30 >> .env
+    echo PERFORMANCE_LOG_STEPS=50 >> .env
+) else if "%memory_config%"=="8gb" (
+    echo MEMORY_LIMIT=7.5G >> .env
+    echo NUM_THREADS=4 >> .env
+    echo QUANT_LEVEL=4bit >> .env
+    echo MAX_SEQ_LEN=64 >> .env
+    echo MAX_SAMPLES=200 >> .env
+    echo LORA_R=8 >> .env
+    echo BATCH_SIZE=1 >> .env
+    echo GRAD_ACCUM=16 >> .env
+    echo MAX_LENGTH=1024 >> .env
+    echo MONITOR_MEMORY=true >> .env
+    echo MEMORY_CHECK_INTERVAL=60 >> .env
+    echo PERFORMANCE_LOG_STEPS=100 >> .env
+) else if "%memory_config%"=="16gb" (
+    echo MEMORY_LIMIT=15G >> .env
+    echo NUM_THREADS=8 >> .env
+    echo QUANT_LEVEL=8bit >> .env
+    echo MAX_SEQ_LEN=128 >> .env
+    echo MAX_SAMPLES=800 >> .env
+    echo LORA_R=16 >> .env
+    echo BATCH_SIZE=2 >> .env
+    echo GRAD_ACCUM=8 >> .env
+    echo MAX_LENGTH=2048 >> .env
+    echo MONITOR_MEMORY=true >> .env
+    echo MEMORY_CHECK_INTERVAL=120 >> .env
+    echo PERFORMANCE_LOG_STEPS=200 >> .env
+) else if "%memory_config%"=="32gb" (
+    echo MEMORY_LIMIT=30G >> .env
+    echo NUM_THREADS=16 >> .env
+    echo QUANT_LEVEL=None >> .env
+    echo MAX_SEQ_LEN=256 >> .env
+    echo MAX_SAMPLES=2000 >> .env
+    echo LORA_R=32 >> .env
+    echo BATCH_SIZE=4 >> .env
+    echo GRAD_ACCUM=4 >> .env
+    echo MAX_LENGTH=4096 >> .env
+    echo MONITOR_MEMORY=true >> .env
+    echo MEMORY_CHECK_INTERVAL=180 >> .env
+    echo PERFORMANCE_LOG_STEPS=300 >> .env
 )
-
-:: 更新.env文件配置
-powershell -Command "(Get-Content .env) -replace 'MEMORY_CONFIG=default', 'MEMORY_CONFIG=%memory_config%' | Set-Content .env"
-
-:: 解除相应配置的注释
-set "pattern=# %memory_config%"
-powershell -Command "$content = Get-Content .env -Raw; $section = $content -split '# [0-9]' | Where-Object { $_ -match '%pattern%' }; if($section) { $startIdx = $content.IndexOf($section); $endIdx = $content.IndexOf('# ', $startIdx + 1); if($endIdx -eq -1) { $endIdx = $content.Length }; $before = $content.Substring(0, $startIdx); $after = $content.Substring($endIdx); $modifiedSection = $section -replace '# ', ''; $newContent = $before + $modifiedSection + $after; $newContent | Set-Content .env; }"
 
 echo [信息] 环境配置已更新为%memory_config%配置
 
