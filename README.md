@@ -11,28 +11,29 @@ ChatGLM-CPU-Trainer是一个为资源受限环境设计的模型训练工具，�
 - **LoRA微调**：使用参数高效微调技术，只训练少量参数
 - **Docker封装**：简化环境配置，确保兼容性
 - **内存监控**：实时监控内存使用，防止OOM错误
-- **简单界面**：提供一键式批处理脚本，无需编写命令
+- **简单命令**：提供Make命令，简化操作流程
 
 ## 系统要求
 
-- Windows操作系统（支持Docker）
-- Docker Desktop已安装并运行
+- Linux/macOS/Windows操作系统（支持Docker）
+- Docker和Docker Compose已安装并运行
 - 最低8GB内存（推荐16GB或以上）
 - 20GB可用磁盘空间
 - 网络连接（用于下载模型）
 
 ## 快速开始
 
-### 一键安装与配置
+### 安装与设置
 
-1. 运行`setup.bat`进行系统配置检测和初始化
-   ```
-   setup.bat
+1. 克隆项目并进入目录
+   ```bash
+   git clone https://github.com/yourusername/ChatGLM-CPU-Trainer.git
+   cd ChatGLM-CPU-Trainer
    ```
 
-2. 构建Docker镜像
-   ```
-   docker build -t chatglm-cpu-trainer .
+2. 配置环境（自动检测系统并设置参数）
+   ```bash
+   make setup
    ```
 
 ### 训练模型
@@ -41,34 +42,35 @@ ChatGLM-CPU-Trainer是一个为资源受限环境设计的模型训练工具，�
    - 每行一个示例
    - 支持txt、csv、json、jsonl格式
 
-2. 运行训练脚本
-   ```
-   一键训练.bat
-   ```
-   或使用docker-compose命令定制训练参数
-   ```
-   docker-compose run train
+2. 运行训练命令
+   ```bash
+   make train
    ```
 
-### 使用模型推理
+   也可以自定义参数：
+   ```bash
+   make train MAX_SAMPLES=50 NUM_EPOCHS=5
+   ```
+
+### 使用模型预测
 
 训练完成后，使用以下命令测试模型：
 
-```
-一键预测.bat
+```bash
+make predict
 ```
 
 或自定义提示词：
 
-```
-docker-compose run -e "PROMPT=你的提示词" predict
+```bash
+make predict-custom PROMPT="请解释什么是机器学习"
 ```
 
 ## 高级配置
 
-### 内存配置
+### 配置文件
 
-系统会根据检测到的内存自动选择对应配置：
+系统会根据检测到的内存自动选择对应配置并生成`.env`文件：
 
 | 内存配置 | 系统内存 | 量化方式 | 序列长度 | 样本数 | 批大小 |
 |----------|---------|---------|---------|--------|--------|
@@ -79,19 +81,26 @@ docker-compose run -e "PROMPT=你的提示词" predict
 
 可以在`.env`文件中手动调整这些参数。
 
+### Docker命令
+
+如果你熟悉Docker，也可以直接使用Docker命令：
+
+```bash
+# 训练
+docker-compose run --rm train
+
+# 自定义参数训练
+docker-compose run --rm -e MAX_SAMPLES=100 train
+
+# 预测
+docker-compose run --rm -e PROMPT="你的提示词" predict
+```
+
 ### 量化选项
 
 - **4-bit量化**：内存占用最小，约为原始模型的1/8
 - **8-bit量化**：内存占用适中，约为原始模型的1/4
 - **无量化**：内存占用最大，但精度最高
-
-### 自定义训练参数
-
-编辑`docker-compose.yml`文件或使用环境变量覆盖默认设置：
-
-```
-MAX_SAMPLES=50 docker-compose run train
-```
 
 ## 项目结构
 
@@ -108,15 +117,12 @@ ChatGLM-CPU-Trainer/
 │   ├── input/                # 训练数据
 │   └── output/               # 输出和日志
 ├── models/                   # 模型存储目录
-├── scripts/                  # 批处理脚本
 ├── .dockerignore             # Docker忽略文件
-├── .env                      # 环境变量配置
+├── .env.template             # 环境变量模板
 ├── Dockerfile                # Docker配置文件
 ├── docker-compose.yml        # Docker Compose配置
-├── requirements.txt          # Python依赖
-├── setup.bat                 # 环境配置脚本
-├── 一键训练.bat               # 快速训练脚本
-└── 一键预测.bat               # 快速预测脚本
+├── Makefile                  # Make命令配置
+└── README.md                 # 项目说明文档
 ```
 
 ## 常见问题
@@ -138,13 +144,9 @@ ChatGLM-CPU-Trainer/
 ### Docker相关问题
 
 如果遇到Docker相关问题：
-1. 确保Docker Desktop正在运行
+1. 确保Docker和Docker Compose已正确安装
 2. 尝试重启Docker服务
 3. 检查Docker资源限制是否合理
-
-## 许可证
-
-无
 
 ## 致谢
 

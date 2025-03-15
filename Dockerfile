@@ -27,7 +27,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制应用代码
 COPY ./app /app/app/
-COPY ./scripts /app/scripts/
 COPY ./README.md /app/README.md
 
 # 创建必要的目录
@@ -40,4 +39,4 @@ ENV PYTHONPATH="${PYTHONPATH}:/app"
 VOLUME ["/app/data", "/app/models"]
 
 # 提供帮助信息的默认命令
-CMD ["python", "-c", "print('ChatGLM-CPU-Trainer\\n\\n可用命令:\\n- python -m app.train --help\\n- python -m app.predict --help\\n\\n详细用法请参考README.md')"]
+CMD ["python", "-c", "print('ChatGLM-CPU-Trainer\\n\\n可用命令:\\n- python -m app.train --help\\n- python -m app.predict --help\\n\\n详细用法请参考README.md或使用docker-compose')"]

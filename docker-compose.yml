@@ -1,18 +1,108 @@
+version: '3.8'
+
 services:
+  # 环境设置服务 - 自动检测系统并生成.env配置
+  setup:
+    image: chatglm-cpu-trainer
+    container_name: chatglm-setup
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./.env.template:/app/.env.template
+    command: >
+      bash -c "
+        echo '====== ChatGLM-CPU-Trainer 环境配置 ======';
+        MEM_TOTAL=$$(grep MemTotal /proc/meminfo | awk '{print $$2}');
+        MEM_GB=$$((MEM_TOTAL / 1024 / 1024));
+        echo \"检测到系统内存: $${MEM_GB}GB\";
+        
+        if [ $$MEM_GB -lt 6 ]; then
+          MEMORY_CONFIG='4gb';
+          MEMORY_LIMIT='3.8G';
+          NUM_THREADS=2;
+          QUANT_LEVEL='4bit';
+          MAX_SEQ_LEN=32;
+          MAX_SAMPLES=30;
+          LORA_R=4;
+          BATCH_SIZE=1;
+          GRAD_ACCUM=32;
+          MAX_LENGTH=512;
+        elif [ $$MEM_GB -lt 12 ]; then
+          MEMORY_CONFIG='8gb';
+          MEMORY_LIMIT='7.5G';
+          NUM_THREADS=4;
+          QUANT_LEVEL='4bit';
+          MAX_SEQ_LEN=64;
+          MAX_SAMPLES=200;
+          LORA_R=8;
+          BATCH_SIZE=1;
+          GRAD_ACCUM=16;
+          MAX_LENGTH=1024;
+        elif [ $$MEM_GB -lt 24 ]; then
+          MEMORY_CONFIG='16gb';
+          MEMORY_LIMIT='15G';
+          NUM_THREADS=8;
+          QUANT_LEVEL='8bit';
+          MAX_SEQ_LEN=128;
+          MAX_SAMPLES=800;
+          LORA_R=16;
+          BATCH_SIZE=2;
+          GRAD_ACCUM=8;
+          MAX_LENGTH=2048;
+        else
+          MEMORY_CONFIG='32gb';
+          MEMORY_LIMIT='30G';
+          NUM_THREADS=16;
+          QUANT_LEVEL='None';
+          MAX_SEQ_LEN=256;
+          MAX_SAMPLES=2000;
+          LORA_R=32;
+          BATCH_SIZE=4;
+          GRAD_ACCUM=4;
+          MAX_LENGTH=4096;
+        fi;
+        
+        cat .env.template | \
+          sed \"s/{{MEMORY_CONFIG}}/$${MEMORY_CONFIG}/g\" | \
+          sed \"s/{{MEMORY_LIMIT}}/$${MEMORY_LIMIT}/g\" | \
+          sed \"s/{{NUM_THREADS}}/$${NUM_THREADS}/g\" | \
+          sed \"s/{{QUANT_LEVEL}}/$${QUANT_LEVEL}/g\" | \
+          sed \"s/{{MAX_SEQ_LEN}}/$${MAX_SEQ_LEN}/g\" | \
+          sed \"s/{{MAX_SAMPLES}}/$${MAX_SAMPLES}/g\" | \
+          sed \"s/{{LORA_R}}/$${LORA_R}/g\" | \
+          sed \"s/{{BATCH_SIZE}}/$${BATCH_SIZE}/g\" | \
+          sed \"s/{{GRAD_ACCUM}}/$${GRAD_ACCUM}/g\" | \
+          sed \"s/{{MAX_LENGTH}}/$${MAX_LENGTH}/g\" > /app/data/.env;
+        
+        cp /app/data/.env /app/.env;
+        
+        echo \"配置已保存到 .env 文件\";
+        echo \"内存配置: $${MEMORY_CONFIG}\";
+        echo \"量化级别: $${QUANT_LEVEL}\";
+        echo \"序列长度: $${MAX_SEQ_LEN}, 样本数: $${MAX_SAMPLES}\";
+        
+        echo \"====== 环境配置完成 ======\";
+      "
+
   # 训练服务 - 通过环境变量配置不同的内存需求
   train:
     image: chatglm-cpu-trainer
     container_name: chatglm-train
+    build:
+      context: .
+      dockerfile: Dockerfile
     volumes:
       - ./data:/app/data
       - ./models:/app/models
       - ~/.cache/huggingface:/root/.cache/huggingface  # 挂载Hugging Face缓存目录
+      - ./.env:/app/.env
+    env_file:
+      - ./.env
     environment:
-      - OMP_NUM_THREADS=${NUM_THREADS:-4}
-      - MKL_NUM_THREADS=${NUM_THREADS:-4}
-      - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONPATH=/app
-      - MEMORY_CONFIG=${MEMORY_CONFIG:-default}  # 可选: 4gb, 8gb, 16gb, 32gb
       - TRANSFORMERS_CACHE=/root/.cache/huggingface  # 设置模型缓存路径
     command: >
       python -m app.train 
@@ -40,14 +130,17 @@ services:
   predict:
     image: chatglm-cpu-trainer
     container_name: chatglm-predict
+    build:
+      context: .
+      dockerfile: Dockerfile
     volumes:
       - ./data:/app/data
       - ./models:/app/models
       - ~/.cache/huggingface:/root/.cache/huggingface  # 挂载Hugging Face缓存目录
+      - ./.env:/app/.env
+    env_file:
+      - ./.env
     environment:
-      - OMP_NUM_THREADS=${NUM_THREADS:-4}
-      - MKL_NUM_THREADS=${NUM_THREADS:-4}
-      - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONPATH=/app
       - TRANSFORMERS_CACHE=/root/.cache/huggingface  # 设置模型缓存路径
     command: >
