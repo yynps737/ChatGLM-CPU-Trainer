@@ -10,6 +10,9 @@ from transformers import AutoTokenizer, AutoModel
 import pandas as pd
 from datasets import Dataset
 
+# 导入量化模块
+from app.quantization import load_quantized_model
+
 # 设置日志格式
 def setup_logging(log_file=None):
     """设置日志配置"""
@@ -54,72 +57,8 @@ def load_model_and_tokenizer(model_path, quantization="None"):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 设置模型参数，默认使用非量化模式
-    model_kwargs = {
-        "trust_remote_code": True,
-        "torch_dtype": torch.float32  # 默认使用float32
-    }
-
-    # 尝试使用量化 (如果指定)
-    use_quantization = quantization != "None"
-    if use_quantization:
-        try:
-            # 尝试导入必要的库
-            import bitsandbytes as bnb
-            from accelerate import init_empty_weights
-
-            logger.info(f"使用 {quantization} 量化加载模型")
-            logger.info(f"bitsandbytes版本: {bnb.__version__}")
-
-            if quantization == "8bit":
-                model_kwargs["load_in_8bit"] = True
-                model_kwargs["device_map"] = {"": "cpu"}
-                del model_kwargs["torch_dtype"]  # 移除默认的dtype
-            elif quantization == "4bit":
-                model_kwargs["load_in_4bit"] = True
-                model_kwargs["bnb_4bit_use_double_quant"] = True
-                model_kwargs["bnb_4bit_quant_type"] = "nf4"
-                model_kwargs["bnb_4bit_compute_dtype"] = torch.float32
-                model_kwargs["device_map"] = {"": "cpu"}
-                del model_kwargs["torch_dtype"]  # 移除默认的dtype
-
-        except (ImportError, Exception) as e:
-            logger.warning(f"量化设置失败 (错误详情: {str(e)})")
-            logger.warning("将使用默认的非量化模式")
-            use_quantization = False
-            model_kwargs = {
-                "trust_remote_code": True,
-                "torch_dtype": torch.float32
-            }
-
-    # 加载模型
-    try:
-        logger.info("开始加载模型...")
-        logger.info(f"使用参数: {model_kwargs}")
-
-        model = AutoModel.from_pretrained(
-            model_path,
-            **model_kwargs
-        )
-        logger.info("模型加载成功!")
-    except Exception as e:
-        logger.error(f"加载模型时出错: {e}")
-
-        # 如果使用量化失败，尝试非量化模式
-        if use_quantization:
-            logger.warning("尝试使用非量化模式重新加载...")
-            try:
-                model = AutoModel.from_pretrained(
-                    model_path,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float32
-                )
-                logger.info("使用非量化模式成功加载模型!")
-            except Exception as e2:
-                logger.error(f"非量化模式加载也失败: {e2}")
-                raise
-        else:
-            raise
+    # 使用量化模块加载模型
+    model = load_quantized_model(AutoModel, model_path, quantization)
 
     return model, tokenizer
 

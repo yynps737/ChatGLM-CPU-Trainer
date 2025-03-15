@@ -1,5 +1,5 @@
 services:
-  # 训练服务 - 自适应配置
+  # 训练服务 - 通过环境变量配置不同的内存需求
   train:
     image: chatglm-cpu-trainer
     container_name: chatglm-train
@@ -7,22 +7,28 @@ services:
       - ./data:/app/data
       - ./models:/app/models
     environment:
-      - OMP_NUM_THREADS=4
-      - MKL_NUM_THREADS=4
+      - OMP_NUM_THREADS=${NUM_THREADS:-4}
+      - MKL_NUM_THREADS=${NUM_THREADS:-4}
       - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONPATH=/app
-    command: python -m app.train 
-              --model_name_or_path THUDM/chatglm2-6b 
-              --dataset_path /app/data/input/dataset.txt 
-              --output_dir /app/models/chatglm-lora
-              --quantization 4bit
-              --max_seq_length 64
-              --max_samples 200
-              --lora_r 8
-              --per_device_train_batch_size 1
-              --gradient_accumulation_steps 16
-              --learning_rate 5e-5
-              --num_train_epochs 3
+      - MEMORY_CONFIG=${MEMORY_CONFIG:-default}  # 可选: 4gb, 8gb, 16gb, 32gb
+    command: >
+      python -m app.train 
+      --model_name_or_path THUDM/chatglm2-6b 
+      --dataset_path /app/data/input/dataset.txt 
+      --output_dir /app/models/chatglm-lora
+      --quantization ${QUANT_LEVEL:-4bit}
+      --max_seq_length ${MAX_SEQ_LEN:-64}
+      --max_samples ${MAX_SAMPLES:-200}
+      --lora_r ${LORA_R:-8}
+      --per_device_train_batch_size ${BATCH_SIZE:-1}
+      --gradient_accumulation_steps ${GRAD_ACCUM:-16}
+      --learning_rate ${LEARNING_RATE:-5e-5}
+      --num_train_epochs ${NUM_EPOCHS:-3}
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-8G}
     restart: "no"
 
   # 预测服务
@@ -33,14 +39,19 @@ services:
       - ./data:/app/data
       - ./models:/app/models
     environment:
-      - OMP_NUM_THREADS=4
-      - MKL_NUM_THREADS=4
+      - OMP_NUM_THREADS=${NUM_THREADS:-4}
+      - MKL_NUM_THREADS=${NUM_THREADS:-4}
       - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONPATH=/app
-    command: python -m app.predict
-              --model_path /app/models/chatglm-lora
-              --base_model_path THUDM/chatglm2-6b
-              --quantization 4bit
-              --prompt "请介绍一下人工智能的发展历史。"
-              --max_length 1024
+    command: >
+      python -m app.predict
+      --model_path /app/models/chatglm-lora
+      --base_model_path THUDM/chatglm2-6b
+      --quantization ${QUANT_LEVEL:-4bit}
+      --prompt "${PROMPT:-请介绍一下人工智能的发展历史。}"
+      --max_length ${MAX_LENGTH:-1024}
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-8G}
     restart: "no"
