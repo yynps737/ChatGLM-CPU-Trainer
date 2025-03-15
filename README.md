@@ -35,28 +35,56 @@ pip install -r requirements_minimal.txt
 
 ## 使用方法
 
-### Windows 用户快速开始
+### 设置环境变量（可选，提高性能）
 
-直接运行批处理文件进行训练：
-
+**Windows CMD：**
 ```
-train_simple.bat
+set OMP_NUM_THREADS=16
+set MKL_NUM_THREADS=16
+set HF_ENDPOINT=https://hf-mirror.com
+set CUDA_VISIBLE_DEVICES=
 ```
 
-### 手动训练
+**Windows PowerShell：**
+```
+$env:OMP_NUM_THREADS=16
+$env:MKL_NUM_THREADS=16
+$env:HF_ENDPOINT="https://hf-mirror.com"
+$env:CUDA_VISIBLE_DEVICES=""
+```
 
+**Linux/Ubuntu：**
+```
+export OMP_NUM_THREADS=16
+export MKL_NUM_THREADS=16
+export HF_ENDPOINT=https://hf-mirror.com
+export CUDA_VISIBLE_DEVICES=
+```
+
+### 训练模型
+
+创建输出目录：
 ```bash
-python simple_train.py \
+mkdir -p output/chatglm-lora
+```
+
+使用以下命令开始训练：
+```bash
+python train_simple.py \
   --model_name_or_path THUDM/chatglm2-6b \
   --dataset_name uer/cluecorpussmall \
-  --use_lora \
-  --lora_r 8 \
+  --lora_r 4 \
   --quantization 4bit \
-  --max_seq_length 128 \
-  --max_samples 1000 \
+  --max_seq_length 64 \
+  --max_samples 500 \
   --per_device_train_batch_size 1 \
   --gradient_accumulation_steps 16 \
   --output_dir output/chatglm-lora
+```
+
+在 Windows 中，可以使用以下单行命令：
+```
+python train_simple.py --model_name_or_path THUDM/chatglm2-6b --dataset_name uer/cluecorpussmall --lora_r 4 --quantization 4bit --max_seq_length 64 --max_samples 500 --per_device_train_batch_size 1 --gradient_accumulation_steps 16 --output_dir output/chatglm-lora
 ```
 
 ### 测试训练好的模型
@@ -67,6 +95,28 @@ python test_model.py \
   --base_model_path THUDM/chatglm2-6b \
   --quantization 4bit \
   --prompt "请介绍一下人工智能的发展历史。"
+```
+
+在 Windows 中，使用以下单行命令：
+```
+python test_model.py --model_path output/chatglm-lora --base_model_path THUDM/chatglm2-6b --quantization 4bit --prompt "请介绍一下人工智能的发展历史。"
+```
+
+## 资源配置建议
+
+### 超低资源配置（4GB RAM）
+```
+--max_seq_length 32 --max_samples 200 --lora_r 2 --per_device_train_batch_size 1 --gradient_accumulation_steps 32
+```
+
+### 低资源配置（8GB RAM）
+```
+--max_seq_length 64 --max_samples 500 --lora_r 4 --per_device_train_batch_size 1 --gradient_accumulation_steps 16
+```
+
+### 中等资源配置（16GB RAM）
+```
+--max_seq_length 128 --max_samples 1000 --lora_r 8 --per_device_train_batch_size 1 --gradient_accumulation_steps 8
 ```
 
 ## 参数说明
@@ -100,14 +150,6 @@ python test_model.py \
 | `--quantization` | 模型量化类型 (4bit, 8bit, None) | `None` |
 | `--max_length` | 生成的最大长度 | `2048` |
 
-## 低资源训练技巧
-
-1. **使用 4bit 量化**：减少内存使用，但可能影响生成质量
-2. **减少序列长度**：降低 `max_seq_length` 参数值
-3. **减少训练样本数**：通过 `max_samples` 参数限制样本数量
-4. **降低 LoRA 秩**：减小 `lora_r` 参数值可以减少训练参数数量
-5. **增加梯度累积步数**：可以使用更小的批处理大小
-
 ## 常见问题
 
 ### 内存不足
@@ -117,6 +159,7 @@ python test_model.py \
 1. 减少 `max_samples` 和 `max_seq_length`
 2. 使用 4bit 量化
 3. 减小 `lora_r` 值
+4. 增加 `gradient_accumulation_steps` 值
 
 ### BitsAndBytes 安装问题（Windows）
 
@@ -126,7 +169,11 @@ Windows 用户如果遇到 bitsandbytes 相关错误，尝试安装特定版本�
 pip uninstall bitsandbytes-windows
 pip install https://github.com/jllllll/bitsandbytes-windows-webui/releases/download/wheels/bitsandbytes-0.41.1-py3-none-win_amd64.whl
 ```
-反馈邮箱：ysa@kiki20.com
+
+### 自定义数据集
+
+如果要使用自定义数据集而不是 Hugging Face 数据集，可以参考 `train_simple.py` 文件中的 `prepare_dataset` 函数，修改为从本地文件加载数据。
+
 ## 许可证
 
 暂无
