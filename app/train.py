@@ -15,6 +15,7 @@ import platform
 
 # 导入工具函数
 from app.utils import setup_logging, load_model_and_tokenizer, prepare_dataset
+from app.memory_monitor import MemoryMonitor  # 导入内存监控器
 
 # 设置日志
 logger = setup_logging(log_file="/app/data/output/train.log")
@@ -53,6 +54,11 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="学习率")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
 
+    # 内存监控参数
+    parser.add_argument("--monitor_memory", action="store_true", help="启用内存监控")
+    parser.add_argument("--memory_check_interval", type=int, default=30,
+                        help="内存检查间隔(秒)")
+
     return parser.parse_args()
 
 def create_lora_config(args):
@@ -72,7 +78,7 @@ def create_lora_config(args):
         inference_mode=False
     )
 
-def train(args, model, tokenized_dataset):
+def train(args, model, tokenized_dataset, memory_monitor=None):
     """训练循环"""
     logger.info("开始训练...")
 
@@ -89,53 +95,80 @@ def train(args, model, tokenized_dataset):
     # 开始训练循环
     model.train()
 
-    for epoch in range(args.num_train_epochs):
-        logger.info(f"开始训练第 {epoch+1}/{args.num_train_epochs} 轮")
-        running_loss = 0.0
+    # 如果启用了内存监控，开始监控
+    if memory_monitor:
+        memory_monitor.start_monitoring()
+        # 训练开始时打印一次详细的内存信息
+        memory_monitor.print_memory_info(detailed=True)
 
-        progress_bar = tqdm(data_loader, desc=f"Epoch {epoch+1}")
-        accumulated_loss = 0
+    try:
+        for epoch in range(args.num_train_epochs):
+            logger.info(f"开始训练第 {epoch+1}/{args.num_train_epochs} 轮")
+            running_loss = 0.0
 
-        for step, batch in enumerate(progress_bar):
-            # 将数据移动到设备上
-            input_ids = batch['input_ids']
-            attention_mask = batch['attention_mask']
-            labels = batch['labels']
+            progress_bar = tqdm(data_loader, desc=f"Epoch {epoch+1}")
+            accumulated_loss = 0
 
-            # 前向传播
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
+            for step, batch in enumerate(progress_bar):
+                # 将数据移动到设备上
+                input_ids = batch['input_ids']
+                attention_mask = batch['attention_mask']
+                labels = batch['labels']
 
-            loss = outputs.loss / args.gradient_accumulation_steps
-            loss.backward()
+                # 前向传播
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels
+                )
 
-            accumulated_loss += loss.item()
+                loss = outputs.loss / args.gradient_accumulation_steps
+                loss.backward()
 
-            # 梯度累积
-            if (step + 1) % args.gradient_accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
+                accumulated_loss += loss.item()
 
-                running_loss += accumulated_loss
-                progress_bar.set_postfix({'loss': accumulated_loss * args.gradient_accumulation_steps})
-                accumulated_loss = 0
+                # 梯度累积
+                if (step + 1) % args.gradient_accumulation_steps == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
 
-                # 检查点保存
-                if (step + 1) % (args.gradient_accumulation_steps * 50) == 0:
-                    logger.info(f"保存检查点 epoch {epoch+1}, step {step+1}")
-                    save_dir = os.path.join(args.output_dir, f"checkpoint-epoch{epoch+1}-step{step+1}")
-                    os.makedirs(save_dir, exist_ok=True)
-                    model.save_pretrained(save_dir)
+                    running_loss += accumulated_loss
+                    progress_bar.set_postfix({'loss': accumulated_loss * args.gradient_accumulation_steps})
+                    accumulated_loss = 0
 
-        # 保存每个epoch的模型
-        epoch_dir = os.path.join(args.output_dir, f"epoch-{epoch+1}")
-        os.makedirs(epoch_dir, exist_ok=True)
-        model.save_pretrained(epoch_dir)
+                    # 检查点保存
+                    if (step + 1) % (args.gradient_accumulation_steps * 50) == 0:
+                        logger.info(f"保存检查点 epoch {epoch+1}, step {step+1}")
+                        save_dir = os.path.join(args.output_dir, f"checkpoint-epoch{epoch+1}-step{step+1}")
+                        os.makedirs(save_dir, exist_ok=True)
+                        model.save_pretrained(save_dir)
 
-        logger.info(f"第 {epoch+1} 轮结束, 平均损失: {running_loss / len(data_loader)}")
+                        # 每个检查点打印一次当前内存使用情况
+                        if memory_monitor:
+                            memory_monitor.print_memory_info(detailed=True)
+                            # 主动尝试垃圾回收
+                            gc.collect()
+                            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+            # 保存每个epoch的模型
+            epoch_dir = os.path.join(args.output_dir, f"epoch-{epoch+1}")
+            os.makedirs(epoch_dir, exist_ok=True)
+            model.save_pretrained(epoch_dir)
+
+            logger.info(f"第 {epoch+1} 轮结束, 平均损失: {running_loss / len(data_loader)}")
+
+            # 每个epoch结束后主动清理内存
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+            # 每个epoch结束后打印详细内存信息
+            if memory_monitor:
+                memory_monitor.print_memory_info(detailed=True)
+
+    finally:
+        # 停止内存监控
+        if memory_monitor:
+            memory_monitor.stop_monitoring()
 
     return model
 
@@ -159,10 +192,21 @@ def main():
     logger.info(f"输出目录: {args.output_dir}")
     logger.info(f"量化级别: {args.quantization}")
     logger.info(f"LoRA参数: r={args.lora_r}, alpha={args.lora_alpha}")
+    logger.info(f"序列长度: {args.max_seq_length}, 样本数: {args.max_samples}")
+    logger.info(f"批大小: {args.per_device_train_batch_size}, 梯度累积: {args.gradient_accumulation_steps}")
     logger.info("=" * 50)
 
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # 初始化内存监控
+    memory_monitor = None
+    if args.monitor_memory:
+        logger.info(f"启用内存监控 (检查间隔: {args.memory_check_interval}秒)")
+        memory_monitor = MemoryMonitor(
+            logger=logger,
+            check_interval=args.memory_check_interval
+        )
 
     # 加载模型和分词器
     model, tokenizer = load_model_and_tokenizer(args.model_name_or_path, args.quantization)
@@ -183,7 +227,7 @@ def main():
     )
 
     # 训练模型
-    model = train(args, model, tokenized_dataset)
+    model = train(args, model, tokenized_dataset, memory_monitor)
 
     # 保存最终模型
     logger.info(f"保存模型到 {args.output_dir}")

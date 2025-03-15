@@ -25,6 +25,8 @@ services:
       --gradient_accumulation_steps ${GRAD_ACCUM:-16}
       --learning_rate ${LEARNING_RATE:-5e-5}
       --num_train_epochs ${NUM_EPOCHS:-3}
+      ${MONITOR_MEMORY:+--monitor_memory}
+      --memory_check_interval ${MEMORY_CHECK_INTERVAL:-60}
     deploy:
       resources:
         limits:
