@@ -25,6 +25,15 @@ if %ERRORLEVEL% NEQ 0 (
     )
 )
 
+echo [信息] 开始训练过程，这可能需要几分钟到几小时不等...
+echo [信息] 首次运行时将自动下载模型(大约3-6GB)，请耐心等待
+echo [信息] 训练进度分为三个阶段:
+echo       1. 模型下载: 首次运行需要，下载ChatGLM模型
+echo       2. 数据准备: 处理训练数据集，分词和编码
+echo       3. 模型训练: 使用LoRA进行实际训练
+echo.
+echo [提示] 如果模型下载速度较慢，可以在.env文件中修改HF_ENDPOINT镜像站点
+
 echo [信息] 开始训练，这可能需要较长时间...
 docker-compose run train
 

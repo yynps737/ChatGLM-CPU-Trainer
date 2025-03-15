@@ -149,6 +149,11 @@ if %ERRORLEVEL% NEQ 0 (
     goto :EOF
 )
 
+echo [信息] 开始模型加载和训练过程...
+echo [信息] 如果是首次运行，将自动下载模型文件(可能需要几分钟到几小时)
+echo [信息] 请耐心等待，下载速度取决于您的网络状况
+echo [信息] 下载进度将在Docker容器内显示
+
 echo [信息] 启动Docker容器进行训练...
 docker run --rm ^
     -v "%PROJECT_DIR%\data:/app/data" ^

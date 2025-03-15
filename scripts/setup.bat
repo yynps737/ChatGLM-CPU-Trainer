@@ -9,6 +9,23 @@ if %ERRORLEVEL% NEQ 0 (
     goto :EOF
 )
 
+:: 检查Windows长路径支持
+echo [信息] 检查Windows长路径支持...
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v "LongPathsEnabled" >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [警告] 无法检查长路径支持状态
+) else (
+    for /f "tokens=3" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v "LongPathsEnabled" ^| findstr "LongPathsEnabled"') do (
+        if "%%a"=="0x0" (
+            echo [警告] Windows长路径支持未启用。项目路径较长时可能出现问题。
+            echo [信息] 可以通过以管理员身份运行以下命令启用长路径支持:
+            echo         reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v "LongPathsEnabled" /t REG_DWORD /d 1 /f
+        ) else (
+            echo [信息] Windows长路径支持已启用
+        )
+    )
+)
+
 where docker-compose >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
     echo [警告] 未找到docker-compose命令，尝试使用docker compose...

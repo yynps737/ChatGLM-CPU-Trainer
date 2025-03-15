@@ -135,6 +135,10 @@ if %ERRORLEVEL% NEQ 0 (
     goto :EOF
 )
 
+echo [信息] 开始模型加载和预测过程...
+echo [信息] 如果是首次运行，将先下载模型文件(可能需要几分钟)
+echo [信息] 请耐心等待，生成过程在Docker容器内进行
+
 echo [信息] 启动Docker容器进行预测...
 docker run --rm ^
     -v "%PROJECT_DIR%\data:/app/data" ^

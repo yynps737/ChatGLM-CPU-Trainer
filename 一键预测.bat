@@ -25,9 +25,15 @@ if not exist "models\chatglm-lora" (
     echo [信息] 建议先运行训练，或确保模型路径正确
 )
 
+echo [信息] 模型加载和预测过程:
+echo      1. 首次运行将下载基础模型(约3-6GB)
+echo      2. 加载LORA模型(如果已训练)
+echo      3. 生成回复(通常需要几秒到几分钟)
+echo.
+
 set /p PROMPT=请输入提示词:
 
-echo [信息] 开始生成回复...
+echo [信息] 开始生成回复，请耐心等待...
 setlocal EnableDelayedExpansion
 docker-compose run -e "PROMPT=!PROMPT!" predict
 
