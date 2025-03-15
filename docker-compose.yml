@@ -15,10 +15,12 @@ services:
     command: >
       bash -c "
         echo '====== ChatGLM-CPU-Trainer 环境配置 ======';
+        # 从/proc/meminfo获取系统内存信息
         MEM_TOTAL=$$(grep MemTotal /proc/meminfo | awk '{print $$2}');
         MEM_GB=$$((MEM_TOTAL / 1024 / 1024));
         echo \"检测到系统内存: $${MEM_GB}GB\";
         
+        # 根据内存大小选择适当的配置
         if [ $$MEM_GB -lt 6 ]; then
           MEMORY_CONFIG='4gb';
           MEMORY_LIMIT='3.8G';
@@ -30,6 +32,8 @@ services:
           BATCH_SIZE=1;
           GRAD_ACCUM=32;
           MAX_LENGTH=512;
+          MEMORY_CHECK_INTERVAL=30;
+          PERFORMANCE_LOG_STEPS=50;
         elif [ $$MEM_GB -lt 12 ]; then
           MEMORY_CONFIG='8gb';
           MEMORY_LIMIT='7.5G';
@@ -41,6 +45,8 @@ services:
           BATCH_SIZE=1;
           GRAD_ACCUM=16;
           MAX_LENGTH=1024;
+          MEMORY_CHECK_INTERVAL=60;
+          PERFORMANCE_LOG_STEPS=100;
         elif [ $$MEM_GB -lt 24 ]; then
           MEMORY_CONFIG='16gb';
           MEMORY_LIMIT='15G';
@@ -52,6 +58,8 @@ services:
           BATCH_SIZE=2;
           GRAD_ACCUM=8;
           MAX_LENGTH=2048;
+          MEMORY_CHECK_INTERVAL=120;
+          PERFORMANCE_LOG_STEPS=200;
         else
           MEMORY_CONFIG='32gb';
           MEMORY_LIMIT='30G';
@@ -63,8 +71,11 @@ services:
           BATCH_SIZE=4;
           GRAD_ACCUM=4;
           MAX_LENGTH=4096;
+          MEMORY_CHECK_INTERVAL=180;
+          PERFORMANCE_LOG_STEPS=300;
         fi;
         
+        # 使用模板生成.env文件
         cat .env.template | \
           sed \"s/{{MEMORY_CONFIG}}/$${MEMORY_CONFIG}/g\" | \
           sed \"s/{{MEMORY_LIMIT}}/$${MEMORY_LIMIT}/g\" | \
@@ -75,16 +86,33 @@ services:
           sed \"s/{{LORA_R}}/$${LORA_R}/g\" | \
           sed \"s/{{BATCH_SIZE}}/$${BATCH_SIZE}/g\" | \
           sed \"s/{{GRAD_ACCUM}}/$${GRAD_ACCUM}/g\" | \
-          sed \"s/{{MAX_LENGTH}}/$${MAX_LENGTH}/g\" > /app/data/.env;
+          sed \"s/{{MAX_LENGTH}}/$${MAX_LENGTH}/g\" | \
+          sed \"s/{{MEMORY_CHECK_INTERVAL}}/$${MEMORY_CHECK_INTERVAL}/g\" | \
+          sed \"s/{{PERFORMANCE_LOG_STEPS}}/$${PERFORMANCE_LOG_STEPS}/g\" > /app/data/.env;
         
+        # 复制.env文件到应用目录
         cp /app/data/.env /app/.env;
         
+        # 输出配置摘要
         echo \"配置已保存到 .env 文件\";
         echo \"内存配置: $${MEMORY_CONFIG}\";
         echo \"量化级别: $${QUANT_LEVEL}\";
         echo \"序列长度: $${MAX_SEQ_LEN}, 样本数: $${MAX_SAMPLES}\";
+        echo \"批大小: $${BATCH_SIZE}, 梯度累积: $${GRAD_ACCUM}\";
         
         echo \"====== 环境配置完成 ======\";
+        
+        # 创建必要的目录结构
+        mkdir -p /app/data/input /app/data/output /app/models;
+        
+        # 检查示例数据集
+        if [ ! -f \"/app/data/input/dataset.txt\" ]; then
+          echo \"未找到示例数据集，请将训练数据放入 data/input/dataset.txt 文件\";
+        else
+          echo \"已找到数据集文件: /app/data/input/dataset.txt\";
+          LINES=$$(wc -l < /app/data/input/dataset.txt);
+          echo \"数据集包含 $${LINES} 行文本\";
+        fi;
       "
 
   # 训练服务 - 通过环境变量配置不同的内存需求

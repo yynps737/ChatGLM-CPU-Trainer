@@ -27,7 +27,12 @@ build:
 setup: build
 	@echo "正在检测系统并配置环境..."
 	@mkdir -p data/input data/output models
-	@test -f data/input/dataset.txt || cp -n scripts/data/input/dataset.txt data/input/ 2>/dev/null || true
+	@# 如果示例数据集不存在，则创建一个空的示例数据集文件
+	@if [ ! -f "data/input/dataset.txt" ]; then \
+		echo "创建示例数据集文件..."; \
+		cp -n data/input/dataset.txt data/input/dataset.txt 2>/dev/null || \
+		echo "人工智能是计算机科学的一个重要分支，致力于研发能够像人类一样思考和学习的智能机器。" > data/input/dataset.txt; \
+	fi
 	docker-compose run --rm setup
 	@if [ -f "data/.env" ]; then \
 		cp data/.env .env; \
@@ -55,6 +60,7 @@ predict: setup
 
 # 自定义提示词预测
 predict-custom: setup
+	@[ -z "$(PROMPT)" ] && echo "错误: 请提供PROMPT参数" && exit 1 || true
 	@echo "使用自定义提示进行预测: \"$(PROMPT)\""
 	docker-compose run --rm -e PROMPT="$(PROMPT)" predict
 	@echo "预测完成!"
